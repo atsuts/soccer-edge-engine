@@ -1,50 +1,9 @@
 import csv
-import sys
 from pathlib import Path
 import tkinter as tk
 from soccer_phase1_engine import SoccerEdgeEngine, MatchState, MarketInput
 from history_logger import log_analysis, settle_match_by_index, summarize_accuracy
 from watchlist import add_match, get_watchlist, get_match_by_index
-
-# Handle display environment issues for VS Studio/Codespaces
-def check_display_and_fallback():
-    """Check if display is available and fallback to web GUI if needed"""
-    try:
-        # Try to create a test tkinter window
-        test_root = tk.Tk()
-        test_root.withdraw()  # Hide it immediately
-        test_root.destroy()
-        return True  # Display works
-    except (tk.TclError, Exception) as e:
-        print("=" * 60)
-        print("DISPLAY ERROR DETECTED")
-        print("=" * 60)
-        print("GUI cannot run in this environment (VS Studio/Codespaces)")
-        print("Error:", str(e))
-        print("\nStarting Web GUI instead...")
-        print("Access the web interface at: http://localhost:5000")
-        print("=" * 60)
-        
-        # Try to start web GUI
-        try:
-            import web_gui
-            web_gui.app.run(debug=False, host='0.0.0.0', port=5000)
-            return False
-        except ImportError:
-            print("Web GUI not available. Installing dependencies...")
-            import subprocess
-            subprocess.run([sys.executable, "-m", "pip", "install", "flask"])
-            try:
-                import web_gui
-                web_gui.app.run(debug=False, host='0.0.0.0', port=5000)
-                return False
-            except Exception as web_error:
-                print(f"Failed to start web GUI: {web_error}")
-                print("\nTo run the GUI locally, use:")
-                print("1. Install dependencies: pip install -r requirements.txt")
-                print("2. Run web GUI: python web_gui.py")
-                print("3. Open browser: http://localhost:5000")
-                return False
 
 
 HISTORY_FILE = Path(__file__).with_name('analysis_history.csv')
@@ -1571,10 +1530,6 @@ def make_filter_card(parent, title):
 
     return outer, body
 
-
-# Check display availability and fallback if needed
-if not check_display_and_fallback():
-    sys.exit(0)  # Exit if web GUI was started
 
 root = tk.Tk()
 root.title("Soccer Edge Engine — Click Watchlist")
