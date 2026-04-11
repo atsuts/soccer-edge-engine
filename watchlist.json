@@ -1,0 +1,44 @@
+[
+  {
+    "home": "Home",
+    "away": "Away",
+    "minute": 75,
+    "home_goals": 0,
+    "away_goals": 0,
+    "stoppage": 0,
+    "home_reds": 0,
+    "away_reds": 0,
+    "pressure": 0,
+    "draw_price": 40.0,
+    "under_price": 45.0,
+    "over_price": 60.0
+  },
+  {
+    "home": "Home",
+    "away": "Away",
+    "minute": 75,
+    "home_goals": 0,
+    "away_goals": 0,
+    "stoppage": 0,
+    "home_reds": 0,
+    "away_reds": 0,
+    "pressure": 0,
+    "draw_price": 40.0,
+    "under_price": 45.0,
+    "over_price": 60.0
+  },
+  {
+    "home": "Junior",
+    "away": "Bucaramanga",
+    "minute": 26,
+    "home_goals": 0,
+    "away_goals": 0,
+    "stoppage": 0,
+    "home_reds": 0,
+    "away_reds": 0,
+    "pressure": 0,
+    "draw_price": 40.0,
+    "under_price": 45.0,
+    "over_price": 60.0
+  }
+]

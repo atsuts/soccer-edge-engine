@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Soccer Edge Engine",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/soccer_gui.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {},
+            "envFile": "${workspaceFolder}/.env"
+        }
+    ],
+    "compounds": [],
+    "inputs": []
+}

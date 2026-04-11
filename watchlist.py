@@ -1,4 +1,29 @@
+import json
+from pathlib import Path
+
+WATCHLIST_FILE = Path(__file__).with_name("watchlist.json")
 watchlist = []
+
+
+def load_watchlist():
+    global watchlist
+
+    if not WATCHLIST_FILE.exists():
+        watchlist = []
+        return watchlist
+
+    try:
+        with open(WATCHLIST_FILE, "r", encoding="utf-8") as f:
+            watchlist = json.load(f)
+    except Exception:
+        watchlist = []
+
+    return watchlist
+
+
+def save_watchlist():
+    with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
+        json.dump(watchlist, f, indent=2)
 
 
 def add_match(state, market):
@@ -16,6 +41,7 @@ def add_match(state, market):
         "under_price": market.under_cents,
         "over_price": market.over_cents,
     })
+    save_watchlist()
 
 
 def get_watchlist():
@@ -28,5 +54,14 @@ def get_match_by_index(index: int):
     return watchlist[index]
 
 
+def remove_match_by_index(index: int):
+    if index < 0 or index >= len(watchlist):
+        return False
+    del watchlist[index]
+    save_watchlist()
+    return True
+
+
 def clear_watchlist():
     watchlist.clear()
+    save_watchlist()
