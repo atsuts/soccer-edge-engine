@@ -85,8 +85,6 @@ soccer-edge-engine/
 ├── PROJECT_ANALYSIS.md           # ⭐ New comprehensive analysis
 ├── SETUP_CONFIG.md               # This file
 ├──
-└── TESTING
-   └── test.py                     # Test utilities
 ```
 
 ---

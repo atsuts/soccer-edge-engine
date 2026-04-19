@@ -30,7 +30,6 @@ soccer-edge-engine/
 ├── history_logger.py             # CSV-based analysis tracking
 ├── live_data.py                  # API-football integration (stub)
 ├── watchlist.py                  # In-memory match watchlist
-├── test.py                       # Test utilities
 └── PROJECT_ROADMAP.md            # Development guide
 ```
 

@@ -6,14 +6,11 @@
   - Full Soccer Edge Engine functionality
   - Run this file to start the application
 
-## BACKUP FILES
-- **main.py** - Backup launcher (use soccer_gui.py instead)
-- **soccer_gui_clean.py** - Backup clean version (use soccer_gui.py instead)
-- **soccer_gui_redesigned.py** - Old redesigned version (use soccer_gui.py instead)
-- **soccer_dashboard.py** - Old dashboard prototype (use soccer_gui.py instead)
+## ALTERNATIVE LAUNCHER
+- **main.py** - Small wrapper that launches the current GUI
 
-## TEST FILES
-- **test.py** - Test file for development
+## ARCHIVED REFERENCES
+- **archive/** - Old GUI experiments and backup versions kept for reference
 
 ## SUPPORTING MODULES
 - **soccer_phase1_engine.py** - Core analysis engine
@@ -45,8 +42,8 @@ python soccer_gui.py
 ### Alternative Methods:
 - Double-click `run.bat` (Windows)
 - Use VS Code Run/Play button (configured to launch soccer_gui.py)
-- Use `python main.py` (backup launcher)
+- Use `python main.py` (wrapper launcher)
 
 ---
 
-**IMPORTANT**: Always use `soccer_gui.py` as the main launcher. Other files are backups or test versions.
+**IMPORTANT**: Always use `soccer_gui.py` as the main launcher. Archived versions are reference only.

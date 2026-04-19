@@ -49,17 +49,15 @@ python soccer_gui.py
 DesktopSoccerEdgeEngine/
 ├── soccer_gui.py          # ← MAIN LAUNCHER (official)
 ├── main.py               # ← Alternative launcher wrapper
-├── soccer_dashboard.py    # ← Experimental dashboard UI
-├── soccer_gui_clean.py   # ← Clean version copy
+├── run.bat               # ← Windows launcher
+├── archive/              # ← Old GUI experiments and backup versions
 └── [other modules]       # ← Supporting modules
 ```
 
 ## Notes
 
 - `soccer_gui.py` contains the complete, production-ready GUI
-- `soccer_gui_clean.py` is a backup copy with symmetrical scoreboard
-- `soccer_dashboard.py` is experimental dashboard design
-- Experimental files are kept for reference but not used as main launcher
+- Old GUI experiments are kept under `archive/` for reference
 - All configurations point to `soccer_gui.py` as the primary entry point
 
 ## Error Handling

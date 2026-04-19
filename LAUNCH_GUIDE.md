@@ -12,7 +12,7 @@
 - Automatically launches `soccer_gui.py`
 
 #### 2. Windows Batch Launcher
-- **File**: `run_gui.bat`
+- **File**: `run.bat`
 - **Usage**: Double-click the file
 - **Location**: Project root folder
 

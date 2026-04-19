@@ -29,8 +29,7 @@ python soccer_gui.py
 - `run.bat` - Windows batch launcher
 
 ### 📦 Backup Files (Do NOT delete)
-- `soccer_gui_clean.py` - Clean version copy
-- `soccer_dashboard.py` - Experimental dashboard
+- `archive/` - Old GUI experiments and backup versions
 - `LAUNCHER_GUIDE.md` - Detailed setup guide
 
 ## ⚙️ Run Configuration
@@ -48,8 +47,7 @@ DesktopSoccerEdgeEngine/
 ├── run.bat               # ← Windows batch launcher
 ├── .vscode/
 │   └── launch.json       # ← VS Code config
-├── soccer_gui_clean.py   # ← Backup copy
-├── soccer_dashboard.py    # ← Experimental
+├── archive/              # ← Old GUI references
 └── PROJECT_CONFIG.md     # ← This file
 ```
 
