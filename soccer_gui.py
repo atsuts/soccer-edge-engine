@@ -422,6 +422,8 @@ class SoccerEdgeApp:
         self.watch_body = None
         self.history_body = None
         self.accuracy_body = None
+        self.odds_body = None
+        self.predictions_body = None
         self.filter_combos = {}
         self.matches_frame = None
         self.matches_canvas = None
@@ -629,7 +631,8 @@ class SoccerEdgeApp:
         self.watchlist_canvas.bind("<Configure>", on_canvas_configure)
 
     def build_center(self, parent):
-        parent.grid_rowconfigure(1, weight=1)
+        parent.grid_rowconfigure(1, weight=6)
+        parent.grid_rowconfigure(2, weight=4)
         parent.grid_columnconfigure(0, weight=1)
 
         tk.Label(
@@ -654,7 +657,22 @@ class SoccerEdgeApp:
         self.tab_content.grid(row=3, column=0, sticky="nsew", padx=8)
 
         self.build_action_bar(body)
+        self.build_market_sections(parent)
         self.render_tab()
+        self.render_market_sections()
+
+    def build_market_sections(self, parent):
+        market = tk.Frame(parent, bg=BG)
+        market.grid(row=2, column=0, sticky="nsew", pady=(0, 8))
+        market.grid_columnconfigure(0, weight=1, uniform="market")
+        market.grid_columnconfigure(1, weight=1, uniform="market")
+        market.grid_rowconfigure(0, weight=1)
+
+        odds_outer, self.odds_body = self.panel(market, "ODDS BOARD")
+        odds_outer.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+
+        pred_outer, self.predictions_body = self.panel(market, "PREDICTION FEED")
+        pred_outer.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
 
     def build_scoreboard(self, parent):
         score = tk.Frame(parent, bg=PANEL)
@@ -974,6 +992,7 @@ class SoccerEdgeApp:
         self.meta_labels["referee"].config(text=match["referee"])
         self.render_tab()
         self.render_team_profiles()
+        self.render_market_sections()
         if refresh:
             self.render_matches()
 
@@ -1085,6 +1104,83 @@ class SoccerEdgeApp:
             tk.Label(row, text=label, bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, width=18, anchor="w").pack(side="left")
             self.mini_bar(row, pct, color)
             tk.Label(row, text=f"{pct}%", bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, width=6, anchor="e").pack(side="right")
+
+    def render_market_sections(self):
+        if self.odds_body is None or self.predictions_body is None:
+            return
+
+        self.clear(self.odds_body)
+        self.clear(self.predictions_body)
+        match = self.current_match
+
+        self.render_odds_board(match)
+        self.render_prediction_feed(match)
+
+    def render_odds_board(self, match):
+        header = tk.Frame(self.odds_body, bg=PANEL_DARK)
+        header.pack(fill="x", padx=6, pady=(6, 2))
+        for text, width in [("BOOK", 14), ("HOME", 7), ("DRAW", 7), ("AWAY", 7), ("EDGE", 7)]:
+            tk.Label(header, text=text, bg=PANEL_DARK, fg=ORANGE, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
+
+        for book, home, draw, away, edge in self.odds_rows(match):
+            row_bg = ROW_ALT if edge >= 0 else ROW
+            row = tk.Frame(self.odds_body, bg=row_bg)
+            row.pack(fill="x", padx=6, pady=1)
+            values = [
+                (book, 14, TEXT),
+                (f"{home:.2f}", 7, CYAN),
+                (f"{draw:.2f}", 7, MUTED),
+                (f"{away:.2f}", 7, ORANGE),
+                (f"{edge:+.1f}", 7, GREEN if edge >= 0 else RED),
+            ]
+            for value, width, color in values:
+                tk.Label(row, text=value, bg=row_bg, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left", pady=4)
+
+        footer = tk.Frame(self.odds_body, bg=PANEL)
+        footer.pack(fill="x", padx=6, pady=(5, 4))
+        best = max(self.odds_rows(match), key=lambda item: item[4])
+        tk.Label(
+            footer,
+            text=f"Best value: {best[0]}  edge {best[4]:+.1f}",
+            bg=PANEL,
+            fg=GREEN if best[4] >= 0 else RED,
+            font=FONT_SMALL,
+            anchor="w",
+        ).pack(fill="x")
+
+    def render_prediction_feed(self, match):
+        header = tk.Frame(self.predictions_body, bg=PANEL_DARK)
+        header.pack(fill="x", padx=6, pady=(6, 2))
+        for text, width in [("SOURCE", 14), ("HOME", 7), ("DRAW", 7), ("AWAY", 7), ("PICK", 10)]:
+            tk.Label(header, text=text, bg=PANEL_DARK, fg=ORANGE, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
+
+        for source, home, draw, away, pick in self.prediction_rows(match):
+            row = tk.Frame(self.predictions_body, bg=ROW)
+            row.pack(fill="x", padx=6, pady=1)
+            pick_color = CYAN if pick == match["home"] else ORANGE if pick == match["away"] else MUTED
+            values = [
+                (source, 14, TEXT),
+                (f"{home}%", 7, CYAN),
+                (f"{draw}%", 7, MUTED),
+                (f"{away}%", 7, ORANGE),
+                (pick[:10], 10, pick_color),
+            ]
+            for value, width, color in values:
+                tk.Label(row, text=value, bg=ROW, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left", pady=4)
+
+        consensus = self.consensus_prediction(match)
+        summary = self.info_card(self.predictions_body)
+        tk.Label(summary, text="CONSENSUS", bg=PANEL_DARK, fg=CYAN, font=FONT_BOLD, anchor="w").pack(fill="x", padx=8, pady=(6, 2))
+        tk.Label(
+            summary,
+            text=f"{consensus['pick']}  |  confidence {consensus['confidence']}%  |  avg home/draw/away {consensus['home']} / {consensus['draw']} / {consensus['away']}",
+            bg=PANEL_DARK,
+            fg=TEXT,
+            font=FONT_SMALL,
+            anchor="w",
+            padx=8,
+            pady=7,
+        ).pack(fill="x")
 
     def render_summary_tab(self, parent, match):
         self.section_title(parent, "EVENTS")
@@ -1243,6 +1339,67 @@ class SoccerEdgeApp:
             ("Crosses", 14, 10),
             ("Goalkeeper saves", 2, 4),
         ]
+
+    def odds_rows(self, match):
+        base_home, base_draw, base_away = match["odds"]
+        books = [
+            ("DraftKings", -0.02, 0.04, 0.03),
+            ("FanDuel", 0.03, -0.03, 0.02),
+            ("BetMGM", 0.01, 0.02, -0.04),
+            ("Caesars", -0.04, 0.05, 0.01),
+            ("bet365", 0.02, -0.01, 0.04),
+            ("Pinnacle", 0.05, 0.03, -0.02),
+            ("BetRivers", -0.01, -0.04, 0.05),
+            ("Unibet", 0.04, 0.00, -0.01),
+        ]
+        rows = []
+        for index, (book, h_adj, d_adj, a_adj) in enumerate(books):
+            home = max(1.01, base_home + h_adj)
+            draw = max(1.01, base_draw + d_adj)
+            away = max(1.01, base_away + a_adj)
+            edge = round(match["edge"] + ((index % 4) - 1.5) * 0.7, 1)
+            rows.append((book, home, draw, away, edge))
+        return rows
+
+    def prediction_rows(self, match):
+        home, draw, away = match["pred"]
+        sources = [
+            ("Opta", 3, -1, -2),
+            ("Forebet", -2, 1, 1),
+            ("PredictZ", 1, 2, -3),
+            ("SportsMole", -1, -2, 3),
+            ("WinDrawWin", 2, 0, -2),
+            ("Betimate", -3, 3, 0),
+            ("SoccerVista", 0, -1, 1),
+            ("Our Model", round(match["edge"]), 0, -round(match["edge"])),
+        ]
+        rows = []
+        for source, h_adj, d_adj, a_adj in sources:
+            h = max(1, min(98, int(home + h_adj)))
+            d = max(1, min(98, int(draw + d_adj)))
+            a = max(1, min(98, int(away + a_adj)))
+            total = h + d + a
+            h = round(h * 100 / total)
+            d = round(d * 100 / total)
+            a = max(1, 100 - h - d)
+            pick = match["home"] if h >= d and h >= a else match["away"] if a >= d else "Draw"
+            rows.append((source, h, d, a, pick))
+        return rows
+
+    def consensus_prediction(self, match):
+        rows = self.prediction_rows(match)
+        home_avg = round(sum(row[1] for row in rows) / len(rows))
+        draw_avg = round(sum(row[2] for row in rows) / len(rows))
+        away_avg = round(sum(row[3] for row in rows) / len(rows))
+        pick = match["home"] if home_avg >= draw_avg and home_avg >= away_avg else match["away"] if away_avg >= draw_avg else "Draw"
+        confidence = max(home_avg, draw_avg, away_avg)
+        return {
+            "home": home_avg,
+            "draw": draw_avg,
+            "away": away_avg,
+            "pick": pick,
+            "confidence": confidence,
+        }
 
     def table_rows(self, match):
         base = [
