@@ -1900,7 +1900,7 @@ class SoccerEdgeApp:
         right_weight = max(100 - left_weight, 1)
         bar.grid_columnconfigure(0, weight=left_weight)
         bar.grid_columnconfigure(1, weight=right_weight)
-        tk.Frame(bar, bg="#c7cbd1", height=9).grid(row=0, column=0, sticky="ew")
+        tk.Frame(bar, bg="#38bdf8", height=9).grid(row=0, column=0, sticky="ew")
         tk.Frame(bar, bg=ORANGE, height=9).grid(row=0, column=1, sticky="ew")
 
     def formation_line(self, parent, players, circle_bg, circle_fg):
