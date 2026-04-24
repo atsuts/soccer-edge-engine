@@ -424,6 +424,7 @@ class SoccerEdgeApp:
         self.selected_odds_book = None
         self.selected_prediction_source = None
         self.selected_player_detail = None
+        self.replay_minute = None
         self.recommendation_body = None
         self.quality_body = None
         self.source_body = None
@@ -982,6 +983,7 @@ class SoccerEdgeApp:
         self.selected_odds_book = None
         self.selected_prediction_source = None
         self.selected_player_detail = None
+        self.replay_minute = self.stats_reference_minute(match)
         self.score_labels["home_badge"].config(text=self.team_initials(match["home"]))
         self.score_labels["away_badge"].config(text=self.team_initials(match["away"]))
         self.score_labels["home"].config(text=match["home"])
@@ -1098,6 +1100,16 @@ class SoccerEdgeApp:
             tk.Frame(strip, bg=CYAN, height=6).grid(row=0, column=0, sticky="ew")
             tk.Frame(strip, bg=ORANGE, height=6).grid(row=0, column=1, sticky="ew")
         return card
+
+    def render_replay_state_note(self, parent, minute, max_minute):
+        tk.Label(
+            parent,
+            text=f"Viewing replay state at {minute:02d}' of {max_minute}'",
+            bg=PANEL,
+            fg=MUTED,
+            font=FONT_SMALL,
+            anchor="w",
+        ).pack(fill="x", pady=(0, 4))
 
     def draw_timeline_markers(self, canvas, match, max_minute):
         canvas.delete("all")
@@ -1277,10 +1289,11 @@ class SoccerEdgeApp:
             tk.Label(row, text=f"{pct}%", bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, width=6, anchor="e").pack(side="right")
 
     def render_overview_tab(self, parent, match):
-        minute = self.stats_reference_minute(match)
+        minute = self.current_replay_minute(match)
         max_minute = self.stats_max_minute(match)
 
         self.section_title(parent, "MATCH OVERVIEW")
+        self.render_replay_state_note(parent, minute, max_minute)
         self.render_stat_summary_row(parent, self.stats_summary_percentages(match, minute, max_minute))
 
         self.section_title(parent, "MATCH DETAILS")
@@ -1618,6 +1631,7 @@ class SoccerEdgeApp:
 
         def refresh_stats(value):
             minute = int(float(value))
+            self.replay_minute = minute
             minute_label.config(text=f"{minute:02d}'")
             for label, home_pct, away_pct in self.stats_summary_percentages(match, minute, max_minute):
                 if label in summary_labels:
@@ -1630,13 +1644,14 @@ class SoccerEdgeApp:
         slider.configure(command=refresh_stats)
         self.draw_timeline_markers(markers, match, max_minute)
         markers.bind("<Configure>", lambda _event: self.draw_timeline_markers(markers, match, max_minute))
-        slider.set(min(match["minute"], max_minute))
+        slider.set(self.current_replay_minute(match))
         refresh_stats(slider.get())
 
     def render_attack_tab(self, parent, match):
-        minute = self.stats_reference_minute(match)
+        minute = self.current_replay_minute(match)
         max_minute = self.stats_max_minute(match)
         self.section_title(parent, "ATTACK PROFILE")
+        self.render_replay_state_note(parent, minute, max_minute)
 
         self.render_stat_summary_row(parent, self.attack_summary_percentages(match, minute, max_minute))
 
@@ -1658,9 +1673,10 @@ class SoccerEdgeApp:
         )
 
     def render_control_tab(self, parent, match):
-        minute = self.stats_reference_minute(match)
+        minute = self.current_replay_minute(match)
         max_minute = self.stats_max_minute(match)
         self.section_title(parent, "CONTROL & TERRITORY")
+        self.render_replay_state_note(parent, minute, max_minute)
 
         self.render_stat_summary_row(parent, self.control_summary_percentages(match, minute, max_minute))
 
@@ -1671,9 +1687,10 @@ class SoccerEdgeApp:
             self.stat_bar(control_card, label, home, away)
 
     def render_defense_tab(self, parent, match):
-        minute = self.stats_reference_minute(match)
+        minute = self.current_replay_minute(match)
         max_minute = self.stats_max_minute(match)
         self.section_title(parent, "DEFENSE & DISCIPLINE")
+        self.render_replay_state_note(parent, minute, max_minute)
 
         self.render_stat_summary_row(parent, self.defense_summary_percentages(match, minute, max_minute))
 
@@ -1916,11 +1933,17 @@ class SoccerEdgeApp:
             return 0
         return 90
 
+    def current_replay_minute(self, match):
+        max_minute = self.stats_max_minute(match)
+        if self.replay_minute is None:
+            return self.stats_reference_minute(match)
+        return max(0, min(int(self.replay_minute), max_minute))
+
     def stat_map(self, match, minute=None, max_minute=None):
         if max_minute is None:
             max_minute = self.stats_max_minute(match)
         if minute is None:
-            minute = self.stats_reference_minute(match)
+            minute = self.current_replay_minute(match)
         return {label: (home, away) for label, home, away in self.match_stats_at_minute(match, minute, max_minute)}
 
     def match_stats_at_minute(self, match, minute, max_minute=90):
