@@ -425,6 +425,12 @@ class SoccerEdgeApp:
         self.selected_prediction_source = None
         self.selected_player_detail = None
         self.replay_minute = None
+        self.replay_job = None
+        self.replay_running = False
+        self.replay_start_minute = None
+        self.replay_slider = None
+        self.replay_refresh = None
+        self.replay_max_minute = 0
         self.center_split = None
         self.center_split_initialized = False
         self.recommendation_body = None
@@ -1008,6 +1014,7 @@ class SoccerEdgeApp:
         row.bind("<Button-1>", lambda _event, item=match: self.select_match(item))
 
     def select_match(self, match, refresh=True):
+        self.stop_replay(reset_to_current=False)
         self.current_match = match
         self.selected_odds_book = None
         self.selected_prediction_source = None
@@ -1048,6 +1055,8 @@ class SoccerEdgeApp:
         return "".join(word[0] for word in words[:3]).upper()
 
     def set_tab(self, name):
+        if name != "Stats Replay":
+            self.pause_replay()
         self.tab_name.set(name)
         self.rebuild_tabs()
         self.render_tab()
@@ -1148,6 +1157,8 @@ class SoccerEdgeApp:
         text = f"Viewing {minute:02d}' replay"
         if minute == match_minute:
             text = f"Viewing current state {minute:02d}'"
+        if self.replay_running:
+            text = f"Playing replay from {self.replay_start_minute:02d}'  |  now {minute:02d}'"
         self.score_labels["replay_state"].config(text=text)
 
     def draw_timeline_markers(self, canvas, match, max_minute):
@@ -1289,9 +1300,57 @@ class SoccerEdgeApp:
         self.render_tab()
 
     def jump_to_replay_minute(self, minute):
-        self.replay_minute = minute
+        self.pause_replay()
+        self.set_replay_minute(minute)
+
+    def play_replay(self):
+        if self.replay_slider is None or self.tab_name.get() != "Stats Replay":
+            self.set_tab("Stats Replay")
+        if self.replay_slider is None:
+            return
+        if self.replay_running:
+            return
+        self.replay_running = True
+        self.replay_start_minute = self.current_replay_minute(self.current_match)
         self.update_replay_header()
-        self.render_tab()
+        self.replay_tick()
+
+    def replay_tick(self):
+        if not self.replay_running or self.replay_slider is None:
+            return
+        current = self.current_replay_minute(self.current_match)
+        if current >= self.replay_max_minute:
+            self.pause_replay()
+            return
+        next_minute = current + 1
+        self.set_replay_minute(next_minute)
+        self.replay_job = self.root.after(380, self.replay_tick)
+
+    def pause_replay(self):
+        self.replay_running = False
+        if self.replay_job is not None:
+            self.root.after_cancel(self.replay_job)
+            self.replay_job = None
+        self.update_replay_header()
+
+    def stop_replay(self, reset_to_current=True):
+        self.pause_replay()
+        target = self.replay_start_minute
+        if target is None:
+            target = self.stats_reference_minute(self.current_match) if reset_to_current else self.current_replay_minute(self.current_match)
+        self.replay_start_minute = None
+        self.set_replay_minute(target)
+
+    def set_replay_minute(self, minute):
+        minute = max(0, min(int(minute), self.stats_max_minute(self.current_match)))
+        self.replay_minute = minute
+        if self.replay_slider is not None and self.tab_name.get() == "Stats Replay":
+            self.replay_slider.set(minute)
+            if self.replay_refresh is not None:
+                self.replay_refresh(str(minute))
+        else:
+            self.update_replay_header()
+            self.render_tab()
 
     def render_info_rows(self, parent, rows):
         for label, home, away in rows:
@@ -1670,6 +1729,20 @@ class SoccerEdgeApp:
         markers = tk.Canvas(slider_card, bg=PANEL_DARK, height=26, highlightthickness=0)
         markers.pack(fill="x", padx=10, pady=(0, 8))
 
+        controls = tk.Frame(slider_card, bg=PANEL_DARK)
+        controls.pack(fill="x", padx=10, pady=(0, 8))
+        self.button(controls, "Play", CYAN_DARK, self.play_replay, width=10, pady=7).pack(side="left", padx=(0, 6))
+        self.button(controls, "Pause", GRAY_BTN, self.pause_replay, width=10, pady=7).pack(side="left", padx=(0, 6))
+        self.button(controls, "Stop", RED_DARK, self.stop_replay, width=10, pady=7).pack(side="left")
+        tk.Label(
+            controls,
+            text="Play runs forward from the selected minute. Stop returns to where that replay started.",
+            bg=PANEL_DARK,
+            fg=MUTED,
+            font=FONT_SMALL,
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True, padx=(12, 0))
+
         stats_frame = tk.Frame(parent, bg=PANEL)
         stats_frame.pack(fill="x")
         events_frame = self.info_card(parent)
@@ -1690,6 +1763,9 @@ class SoccerEdgeApp:
         slider.configure(command=refresh_stats)
         self.draw_timeline_markers(markers, match, max_minute)
         markers.bind("<Configure>", lambda _event: self.draw_timeline_markers(markers, match, max_minute))
+        self.replay_slider = slider
+        self.replay_refresh = refresh_stats
+        self.replay_max_minute = max_minute
         slider.set(self.current_replay_minute(match))
         refresh_stats(slider.get())
 
