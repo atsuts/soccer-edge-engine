@@ -421,6 +421,8 @@ class SoccerEdgeApp:
         self.accuracy_body = None
         self.odds_body = None
         self.predictions_body = None
+        self.selected_odds_book = None
+        self.selected_prediction_source = None
         self.recommendation_body = None
         self.quality_body = None
         self.source_body = None
@@ -973,6 +975,8 @@ class SoccerEdgeApp:
 
     def select_match(self, match, refresh=True):
         self.current_match = match
+        self.selected_odds_book = None
+        self.selected_prediction_source = None
         self.score_labels["home_badge"].config(text=self.team_initials(match["home"]))
         self.score_labels["away_badge"].config(text=self.team_initials(match["away"]))
         self.score_labels["home"].config(text=match["home"])
@@ -1115,8 +1119,15 @@ class SoccerEdgeApp:
         self.clear(self.predictions_body)
         match = self.current_match
 
-        self.render_odds_board(match)
-        self.render_prediction_feed(match)
+        if self.selected_odds_book:
+            self.render_odds_detail(match, self.selected_odds_book)
+        else:
+            self.render_odds_board(match)
+
+        if self.selected_prediction_source:
+            self.render_prediction_detail(match, self.selected_prediction_source)
+        else:
+            self.render_prediction_feed(match)
 
     def render_odds_board(self, match):
         header = tk.Frame(self.odds_body, bg=PANEL_DARK)
@@ -1136,7 +1147,10 @@ class SoccerEdgeApp:
                 (f"{edge:+.1f}", 7, GREEN if edge >= 0 else RED),
             ]
             for value, width, color in values:
-                tk.Label(row, text=value, bg=row_bg, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left", pady=4)
+                label = tk.Label(row, text=value, bg=row_bg, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w")
+                label.pack(side="left", pady=4)
+                label.bind("<Double-Button-1>", lambda _event, book_name=book: self.open_odds_detail(book_name))
+            row.bind("<Double-Button-1>", lambda _event, book_name=book: self.open_odds_detail(book_name))
 
         footer = tk.Frame(self.odds_body, bg=PANEL)
         footer.pack(fill="x", padx=6, pady=(5, 4))
@@ -1149,6 +1163,14 @@ class SoccerEdgeApp:
             font=FONT_SMALL,
             anchor="w",
         ).pack(fill="x")
+        tk.Label(
+            self.odds_body,
+            text="Double-click a bookmaker row for full market detail.",
+            bg=PANEL,
+            fg=MUTED,
+            font=FONT_SMALL,
+            anchor="w",
+        ).pack(fill="x", padx=6, pady=(0, 4))
 
     def render_prediction_feed(self, match):
         header = tk.Frame(self.predictions_body, bg=PANEL_DARK)
@@ -1168,7 +1190,10 @@ class SoccerEdgeApp:
                 (pick[:10], 10, pick_color),
             ]
             for value, width, color in values:
-                tk.Label(row, text=value, bg=ROW, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left", pady=4)
+                label = tk.Label(row, text=value, bg=ROW, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w")
+                label.pack(side="left", pady=4)
+                label.bind("<Double-Button-1>", lambda _event, source_name=source: self.open_prediction_detail(source_name))
+            row.bind("<Double-Button-1>", lambda _event, source_name=source: self.open_prediction_detail(source_name))
 
         consensus = self.consensus_prediction(match)
         summary = self.info_card(self.predictions_body)
@@ -1183,6 +1208,125 @@ class SoccerEdgeApp:
             padx=8,
             pady=7,
         ).pack(fill="x")
+        tk.Label(
+            self.predictions_body,
+            text="Double-click a prediction source row for full source detail.",
+            bg=PANEL,
+            fg=MUTED,
+            font=FONT_SMALL,
+            anchor="w",
+        ).pack(fill="x", padx=6, pady=(0, 4))
+
+    def render_odds_detail(self, match, book_name):
+        top = tk.Frame(self.odds_body, bg=PANEL_DARK)
+        top.pack(fill="x", padx=6, pady=(6, 6))
+        tk.Button(
+            top,
+            text="< Back to books",
+            bg="#243244",
+            fg=TEXT,
+            activebackground="#334155",
+            activeforeground=TEXT,
+            relief="flat",
+            font=FONT_SMALL,
+            command=self.close_odds_detail,
+        ).pack(side="left")
+        tk.Label(top, text=f"{book_name} detailed markets", bg=PANEL_DARK, fg=ORANGE, font=FONT_BOLD).pack(side="left", padx=10)
+
+        headline = self.info_card(self.odds_body)
+        headline.pack(fill="x", padx=6, pady=(0, 6))
+        tk.Label(
+            headline,
+            text=f"{match['home']} vs {match['away']}  |  {match['league']}  |  {book_name}",
+            bg=PANEL_DARK,
+            fg=TEXT,
+            font=FONT_BOLD,
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(8, 4))
+        tk.Label(
+            headline,
+            text="Double Chance, Totals, BTTS, cards, corners, and live derivative prices for this bookmaker.",
+            bg=PANEL_DARK,
+            fg=MUTED,
+            font=FONT_SMALL,
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(0, 8))
+
+        header = tk.Frame(self.odds_body, bg=PANEL_DARK)
+        header.pack(fill="x", padx=6, pady=(0, 2))
+        for text, width in [("MARKET", 20), ("HOME/YES", 10), ("DRAW", 10), ("AWAY/NO", 10), ("NOTE", 18)]:
+            tk.Label(header, text=text, bg=PANEL_DARK, fg=ORANGE, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
+
+        for market, left, middle, right, note in self.odds_detail_rows(match, book_name):
+            row = tk.Frame(self.odds_body, bg=ROW)
+            row.pack(fill="x", padx=6, pady=1)
+            for value, width, color in [
+                (market, 20, TEXT),
+                (left, 10, CYAN),
+                (middle, 10, MUTED),
+                (right, 10, ORANGE),
+                (note, 18, GREEN if "value" in note.lower() else MUTED),
+            ]:
+                tk.Label(row, text=value, bg=ROW, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left", pady=4)
+
+    def render_prediction_detail(self, match, source_name):
+        top = tk.Frame(self.predictions_body, bg=PANEL_DARK)
+        top.pack(fill="x", padx=6, pady=(6, 6))
+        tk.Button(
+            top,
+            text="< Back to sources",
+            bg="#243244",
+            fg=TEXT,
+            activebackground="#334155",
+            activeforeground=TEXT,
+            relief="flat",
+            font=FONT_SMALL,
+            command=self.close_prediction_detail,
+        ).pack(side="left")
+        tk.Label(top, text=f"{source_name} prediction detail", bg=PANEL_DARK, fg=ORANGE, font=FONT_BOLD).pack(side="left", padx=10)
+
+        summary = self.info_card(self.predictions_body)
+        summary.pack(fill="x", padx=6, pady=(0, 6))
+        detail = self.prediction_detail_snapshot(match, source_name)
+        tk.Label(summary, text=detail["headline"], bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(fill="x", padx=10, pady=(8, 3))
+        tk.Label(summary, text=f"Confidence {detail['confidence']}%  |  model family {detail['model_family']}  |  update {detail['updated']}", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(fill="x", padx=10, pady=(0, 8))
+
+        self.section_title(self.predictions_body, "SOURCE MARKETS")
+        markets = self.info_card(self.predictions_body)
+        markets.pack(fill="x", padx=6, pady=(0, 4))
+        for label, value in detail["markets"]:
+            row = tk.Frame(markets, bg=PANEL_DARK)
+            row.pack(fill="x", padx=10, pady=2)
+            tk.Label(row, text=label, bg=PANEL_DARK, fg=CYAN, font=FONT_SMALL, width=18, anchor="w").pack(side="left")
+            tk.Label(row, text=value, bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, anchor="w").pack(side="left")
+
+        self.section_title(self.predictions_body, "WHY THIS SOURCE LEANS HERE")
+        reasons = self.info_card(self.predictions_body)
+        reasons.pack(fill="x", padx=6, pady=(0, 4))
+        for reason in detail["reasons"]:
+            tk.Label(reasons, text=f"+ {reason}", bg=PANEL_DARK, fg=GREEN, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", padx=10, pady=2)
+
+        self.section_title(self.predictions_body, "SOURCE WARNING FLAGS")
+        flags = self.info_card(self.predictions_body)
+        flags.pack(fill="x", padx=6, pady=(0, 4))
+        for flag in detail["flags"]:
+            tk.Label(flags, text=f"- {flag}", bg=PANEL_DARK, fg=RED, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", padx=10, pady=2)
+
+    def open_odds_detail(self, book_name):
+        self.selected_odds_book = book_name
+        self.render_market_sections()
+
+    def close_odds_detail(self):
+        self.selected_odds_book = None
+        self.render_market_sections()
+
+    def open_prediction_detail(self, source_name):
+        self.selected_prediction_source = source_name
+        self.render_market_sections()
+
+    def close_prediction_detail(self):
+        self.selected_prediction_source = None
+        self.render_market_sections()
 
     def render_summary_tab(self, parent, match):
         self.section_title(parent, "EVENTS")
@@ -1363,6 +1507,22 @@ class SoccerEdgeApp:
             rows.append((book, home, draw, away, edge))
         return rows
 
+    def odds_detail_rows(self, match, book_name):
+        book_row = next((row for row in self.odds_rows(match) if row[0] == book_name), self.odds_rows(match)[0])
+        _, home, draw, away, edge = book_row
+        return [
+            ("1X2", f"{home:.2f}", f"{draw:.2f}", f"{away:.2f}", "main line"),
+            ("Double Chance", "1X 1.22", "", f"X2 1.61", "safer"),
+            ("Draw No Bet", f"{max(1.10, home - 0.45):.2f}", "", f"{max(1.10, away - 0.55):.2f}", "reduced risk"),
+            ("Over/Under 2.5", "Over 1.91", "", "Under 1.95", "tight market"),
+            ("Over/Under 3.5", "Over 2.74", "", "Under 1.48", "tempo sensitive"),
+            ("BTTS", "Yes 1.68", "", "No 2.18", "live pace"),
+            ("Asian Handicap", f"{match['home']} -0.25", "", f"{match['away']} +0.25", "model value"),
+            ("Corners O/U 9.5", "Over 1.87", "", "Under 1.98", "edge small"),
+            ("Cards O/U 4.5", "Over 1.73", "", "Under 2.08", "ref linked"),
+            ("Next Goal", f"{match['home']} 2.40", "", f"{match['away']} 2.75", "live only"),
+        ]
+
     def prediction_rows(self, match):
         home, draw, away = match["pred"]
         sources = [
@@ -1387,6 +1547,34 @@ class SoccerEdgeApp:
             pick = match["home"] if h >= d and h >= a else match["away"] if a >= d else "Draw"
             rows.append((source, h, d, a, pick))
         return rows
+
+    def prediction_detail_snapshot(self, match, source_name):
+        row = next((item for item in self.prediction_rows(match) if item[0] == source_name), self.prediction_rows(match)[0])
+        _, home, draw, away, pick = row
+        return {
+            "headline": f"{source_name} leans {pick} for {match['home']} vs {match['away']}",
+            "confidence": max(home, draw, away),
+            "model_family": "ensemble + news weighting" if source_name in ("Opta", "Our Model") else "stats-led forecast",
+            "updated": "live" if match["status"] == "LIVE" else "pre-match",
+            "markets": [
+                ("1X2", f"{home}% / {draw}% / {away}%"),
+                ("Over 2.5", f"{min(78, away + 12)}%"),
+                ("Under 2.5", f"{max(22, 100 - away - 12)}%"),
+                ("BTTS", f"{52 + (match['home_score'] + match['away_score']) * 6}%"),
+                ("Most likely score", "1-1" if draw >= max(home, away) - 4 else "1-2" if pick == match["away"] else "2-1"),
+                ("Fair line", f"{pick} {round(100 / max(home, away), 2)}"),
+            ],
+            "reasons": [
+                f"{source_name} weights recent form and matchup profile heavily.",
+                f"{match['away']} pressure and transition threat improve the away scenario." if pick == match["away"] else f"{match['home']} control profile improves the home scenario." if pick == match["home"] else "Balanced game state keeps draw scenarios alive.",
+                f"Weather, referee, and market movement are included as secondary adjustments.",
+            ],
+            "flags": [
+                "Consensus can lag behind very recent lineup changes.",
+                "Source-specific scoreline markets are usually noisier than moneyline probabilities.",
+                "Treat as support evidence, not a standalone trigger.",
+            ],
+        }
 
     def consensus_prediction(self, match):
         rows = self.prediction_rows(match)
