@@ -440,6 +440,7 @@ class SoccerEdgeApp:
         self.match_chats = {}
         self.match_chat_room = {}
         self.match_challenges = {}
+        self.challenge_history = []
         self.center_split = None
         self.center_split_initialized = False
         self.recommendation_body = None
@@ -456,6 +457,7 @@ class SoccerEdgeApp:
 
         self.configure_styles()
         self.build_ui()
+        self.challenge_history = self.seed_challenge_history()
         self.select_match(self.current_match, refresh=False)
 
     def configure_styles(self):
@@ -2062,6 +2064,12 @@ class SoccerEdgeApp:
         self.section_title(parent, "PREDICTION CHALLENGE")
         self.render_prediction_challenge(parent, match)
 
+        self.section_title(parent, "COMMUNITY PROFILES")
+        self.render_profile_board(parent)
+
+        self.section_title(parent, "PLATFORM VS COMMUNITY")
+        self.render_platform_community_board(parent)
+
         feed = self.info_card(parent)
         feed.pack(fill="both", expand=True, pady=(0, 6))
         chat_canvas = tk.Canvas(feed, bg=PANEL_DARK, height=360, highlightthickness=0)
@@ -2365,11 +2373,94 @@ class SoccerEdgeApp:
             ]:
                 tk.Label(line, text=value, bg=line.cget("bg"), fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left", pady=4)
 
+    def render_profile_board(self, parent):
+        card = self.info_card(parent)
+        card.pack(fill="x", pady=(0, 6))
+        header = tk.Frame(card, bg=PANEL_DARK)
+        header.pack(fill="x", padx=10, pady=(8, 4))
+        for text, width in [("USER", 14), ("W-L-P", 10), ("HIT", 8), ("OPEN", 8), ("BEST", 14)]:
+            tk.Label(header, text=text, bg=PANEL_DARK, fg=ORANGE, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
+
+        for row in self.profile_rows()[:6]:
+            line = tk.Frame(card, bg=ROW if row["tag"] != "platform" else ROW_ALT)
+            line.pack(fill="x", padx=10, pady=1)
+            name_color = ORANGE if row["tag"] == "platform" else GREEN if row["tag"] == "you" else TEXT
+            values = [
+                (row["name"], 14, name_color),
+                (f"{row['wins']}-{row['losses']}-{row['pushes']}", 10, TEXT),
+                (f"{row['hit_rate']}%", 8, GREEN),
+                (str(row["open"]), 8, MUTED),
+                (row["best_market"], 14, CYAN),
+            ]
+            for value, width, color in values:
+                tk.Label(line, text=value, bg=line.cget("bg"), fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left", pady=4)
+
+    def render_platform_community_board(self, parent):
+        card = self.info_card(parent)
+        card.pack(fill="x", pady=(0, 6))
+        summary = self.platform_vs_community_summary()
+        top = tk.Frame(card, bg=PANEL_DARK)
+        top.pack(fill="x", padx=10, pady=(8, 6))
+        tk.Label(top, text="Long-run settled score", bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(side="left")
+        tk.Label(top, text=f"{summary['winner']} on top", bg=PANEL_DARK, fg=ORANGE, font=FONT_SMALL, anchor="e").pack(side="right")
+
+        row = tk.Frame(card, bg=PANEL_DARK)
+        row.pack(fill="x", padx=10, pady=(0, 8))
+        for label, value, color in [
+            ("Platform Hit", f"{summary['platform_hit']}%", ORANGE),
+            ("Community Hit", f"{summary['community_hit']}%", CYAN),
+            ("Settled Picks", str(summary["settled"]), GREEN),
+            ("Open Picks", str(summary["open"]), MUTED),
+        ]:
+            cell = tk.Frame(row, bg="#243244")
+            cell.pack(side="left", expand=True, fill="x", padx=3)
+            tk.Label(cell, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(5, 2))
+            tk.Label(cell, text=value, bg="#243244", fg=color, font=FONT_BOLD).pack(pady=(0, 6))
+
+        notes = tk.Frame(card, bg=PANEL_DARK)
+        notes.pack(fill="x", padx=10, pady=(0, 8))
+        for text in [
+            f"Platform settled record: {summary['platform_wins']}-{summary['platform_losses']}-{summary['platform_pushes']}",
+            f"Community settled record: {summary['community_wins']}-{summary['community_losses']}-{summary['community_pushes']}",
+            "Open picks stay out of hit-rate scoring until the match is settled.",
+        ]:
+            tk.Label(notes, text=f"+ {text}", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(fill="x", pady=1)
+
     def chat_time_label(self, match):
         minute = self.current_replay_minute(match)
         if match["status"] == "UP" and minute == 0:
             return "Pre | now"
         return f"{minute:02d}' | now"
+
+    def seed_challenge_history(self):
+        return [
+            self.make_history_record("Edge Platform", "platform", "1X2", "Liverpool", 45, 1, 1, 1),
+            self.make_history_record("Edge Platform", "platform", "O/U 2.5", "Under 2.5", 58, 0, 0, 1),
+            self.make_history_record("Edge Platform", "platform", "BTTS", "Yes", 61, 2, 1, 1),
+            self.make_history_record("SharpTom", "guest", "1X2", "Liverpool", 58, 1, 1, 1),
+            self.make_history_record("SharpTom", "guest", "BTTS", "No", 51, 0, 0, 1),
+            self.make_history_record("OddsMuse", "guest", "O/U 2.5", "Under 2.5", 54, 0, 0, 1),
+            self.make_history_record("OddsMuse", "guest", "1X2", "Draw", 31, 1, 1, 1),
+            self.make_history_record("PulseRita", "guest", "BTTS", "Yes", 61, 2, 1, 1),
+            self.make_history_record("PulseRita", "guest", "1X2", "Home", 44, 0, 2, 2),
+            self.make_history_record("Guest001", "you", "1X2", "Man City", 52, 1, 0, 0),
+            self.make_history_record("Guest001", "you", "O/U 2.5", "Over 2.5", 57, 2, 1, 1),
+        ]
+
+    def make_history_record(self, name, tag, market, pick, confidence, home_score, away_score, match_id):
+        result = self.settle_pick(market, pick, home_score, away_score)
+        return {
+            "name": name,
+            "tag": tag,
+            "market": market,
+            "pick": pick,
+            "confidence": confidence,
+            "home_score": home_score,
+            "away_score": away_score,
+            "match_id": match_id,
+            "status": "Settled",
+            "result": result,
+        }
 
     def challenge_entries(self, match):
         if match["id"] not in self.match_challenges:
@@ -2392,7 +2483,7 @@ class SoccerEdgeApp:
             "market": "1X2",
             "pick": snapshot["market"].split("|")[-1].replace("pick", "").strip(),
             "confidence": snapshot["confidence"],
-            "accuracy": 74,
+            "accuracy": self.profile_lookup("Edge Platform")["hit_rate"],
         }
 
     def set_guest_market(self, value, match):
@@ -2431,6 +2522,20 @@ class SoccerEdgeApp:
                 "accuracy": accuracy,
             }
         )
+        self.challenge_history.append(
+            {
+                "name": handle,
+                "tag": "you",
+                "market": self.guest_market.get(),
+                "pick": pick,
+                "confidence": confidence,
+                "home_score": match["home_score"],
+                "away_score": match["away_score"],
+                "match_id": match["id"],
+                "status": "Live" if match["status"] == "LIVE" else "Pending",
+                "result": "Open",
+            }
+        )
         self.tracker_status.config(text=f"{handle} joined the challenge on {match['home']} vs {match['away']}.", fg=GREEN)
         self.render_chat_preview()
         if self.tab_name.get() == "Chat":
@@ -2451,6 +2556,92 @@ class SoccerEdgeApp:
         if pick == "Yes":
             return min(76, int(round((match["home_avg"] + match["away_avg"]) * 18)))
         return 100 - min(76, int(round((match["home_avg"] + match["away_avg"]) * 18)))
+
+    def settle_pick(self, market, pick, home_score, away_score):
+        if market == "1X2":
+            outcome = "Draw" if home_score == away_score else "Home" if home_score > away_score else "Away"
+            home_teams = {match["home"] for match in MATCHES}
+            away_teams = {match["away"] for match in MATCHES}
+            if pick == "Draw":
+                mapped_pick = "Draw"
+            elif pick == "Away" or pick in away_teams:
+                mapped_pick = "Away"
+            else:
+                mapped_pick = "Home"
+            return "W" if mapped_pick == outcome else "L"
+        if market == "O/U 2.5":
+            total = home_score + away_score
+            outcome = "Over 2.5" if total >= 3 else "Under 2.5"
+            return "W" if pick == outcome else "L"
+        if market == "BTTS":
+            outcome = "Yes" if home_score > 0 and away_score > 0 else "No"
+            return "W" if pick == outcome else "L"
+        return "P"
+
+    def profile_rows(self):
+        buckets = {}
+        for item in self.challenge_history:
+            row = buckets.setdefault(
+                item["name"],
+                {"name": item["name"], "tag": item["tag"], "wins": 0, "losses": 0, "pushes": 0, "open": 0, "best_market": item["market"]},
+            )
+            if item["status"] == "Settled":
+                if item["result"] == "W":
+                    row["wins"] += 1
+                elif item["result"] == "L":
+                    row["losses"] += 1
+                else:
+                    row["pushes"] += 1
+            else:
+                row["open"] += 1
+
+        rows = []
+        for row in buckets.values():
+            settled = row["wins"] + row["losses"] + row["pushes"]
+            hit_rate = 0 if settled == 0 else int(round((row["wins"] / max(1, settled)) * 100))
+            row["hit_rate"] = hit_rate
+            rows.append(row)
+        return sorted(rows, key=lambda item: (item["hit_rate"], item["wins"]), reverse=True)
+
+    def profile_lookup(self, name):
+        for row in self.profile_rows():
+            if row["name"] == name:
+                return row
+        return {"name": name, "tag": "guest", "wins": 0, "losses": 0, "pushes": 0, "open": 0, "best_market": "1X2", "hit_rate": 0}
+
+    def platform_vs_community_summary(self):
+        platform = {"wins": 0, "losses": 0, "pushes": 0, "open": 0}
+        community = {"wins": 0, "losses": 0, "pushes": 0, "open": 0}
+        for item in self.challenge_history:
+            bucket = platform if item["tag"] == "platform" else community
+            if item["status"] == "Settled":
+                if item["result"] == "W":
+                    bucket["wins"] += 1
+                elif item["result"] == "L":
+                    bucket["losses"] += 1
+                else:
+                    bucket["pushes"] += 1
+            else:
+                bucket["open"] += 1
+
+        platform_settled = platform["wins"] + platform["losses"] + platform["pushes"]
+        community_settled = community["wins"] + community["losses"] + community["pushes"]
+        platform_hit = 0 if platform_settled == 0 else int(round((platform["wins"] / max(1, platform_settled)) * 100))
+        community_hit = 0 if community_settled == 0 else int(round((community["wins"] / max(1, community_settled)) * 100))
+        winner = "Platform" if platform_hit >= community_hit else "Community"
+        return {
+            "platform_hit": platform_hit,
+            "community_hit": community_hit,
+            "platform_wins": platform["wins"],
+            "platform_losses": platform["losses"],
+            "platform_pushes": platform["pushes"],
+            "community_wins": community["wins"],
+            "community_losses": community["losses"],
+            "community_pushes": community["pushes"],
+            "settled": platform_settled + community_settled,
+            "open": platform["open"] + community["open"],
+            "winner": winner,
+        }
 
     def render_chat_preview(self):
         if self.chat_preview_body is None:
@@ -3526,6 +3717,19 @@ class SoccerEdgeApp:
             row.pack(fill="x", padx=8, pady=1)
             tk.Label(row, text=f"{label}:", bg=PANEL, fg=MUTED, font=FONT_MONO_SMALL, width=24, anchor="w").pack(side="left")
             tk.Label(row, text=str(value), bg=PANEL, fg=GREEN, font=FONT_MONO_SMALL, anchor="e").pack(side="right")
+
+        community = self.platform_vs_community_summary()
+        tk.Label(self.accuracy_body, text="PLATFORM VS COMMUNITY", bg=PANEL, fg=CYAN, font=FONT_MONO_SMALL, anchor="w").pack(fill="x", padx=8, pady=(10, 3))
+        for label, value, color in [
+            ("Platform hit %", community["platform_hit"], ORANGE),
+            ("Community hit %", community["community_hit"], CYAN),
+            ("Settled challenge picks", community["settled"], GREEN),
+            ("Open challenge picks", community["open"], MUTED),
+        ]:
+            row = tk.Frame(self.accuracy_body, bg=PANEL)
+            row.pack(fill="x", padx=8, pady=1)
+            tk.Label(row, text=f"{label}:", bg=PANEL, fg=MUTED, font=FONT_MONO_SMALL, width=24, anchor="w").pack(side="left")
+            tk.Label(row, text=str(value), bg=PANEL, fg=color, font=FONT_MONO_SMALL, anchor="e").pack(side="right")
 
     def toggle_watchlist(self, match):
         if match["id"] in self.watchlist_ids:
