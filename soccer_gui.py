@@ -406,7 +406,7 @@ class SoccerEdgeApp:
         self.watchlist_ids = set()
         self.tracker_job = None
         self.tracker_running = False
-        self.tab_name = tk.StringVar(value="Overview")
+        self.tab_name = tk.StringVar(value="Stats Replay")
 
         self.filters = {
             "country": tk.StringVar(value="All"),
@@ -425,6 +425,8 @@ class SoccerEdgeApp:
         self.selected_prediction_source = None
         self.selected_player_detail = None
         self.replay_minute = None
+        self.center_split = None
+        self.center_split_initialized = False
         self.recommendation_body = None
         self.quality_body = None
         self.source_body = None
@@ -635,8 +637,7 @@ class SoccerEdgeApp:
         self.watchlist_canvas.bind("<Configure>", on_canvas_configure)
 
     def build_center(self, parent):
-        parent.grid_rowconfigure(1, weight=6)
-        parent.grid_rowconfigure(2, weight=4)
+        parent.grid_rowconfigure(1, weight=1)
         parent.grid_columnconfigure(0, weight=1)
 
         tk.Label(
@@ -648,8 +649,25 @@ class SoccerEdgeApp:
             anchor="w",
         ).grid(row=0, column=0, sticky="ew", pady=(8, 6))
 
-        body = tk.Frame(parent, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
-        body.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
+        self.center_split = tk.PanedWindow(
+            parent,
+            orient="vertical",
+            bg=BG,
+            sashwidth=8,
+            sashrelief="raised",
+            showhandle=True,
+            opaqueresize=True,
+        )
+        self.center_split.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
+        self.center_split.bind("<Configure>", self.on_center_split_configure)
+
+        top_wrap = tk.Frame(self.center_split, bg=BG)
+        bottom_wrap = tk.Frame(self.center_split, bg=BG)
+        self.center_split.add(top_wrap, minsize=360, stretch="always")
+        self.center_split.add(bottom_wrap, minsize=220, stretch="always")
+
+        body = tk.Frame(top_wrap, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        body.pack(fill="both", expand=True)
         body.grid_columnconfigure(0, weight=1)
         body.grid_rowconfigure(3, weight=1)
 
@@ -661,13 +679,13 @@ class SoccerEdgeApp:
         self.tab_content.grid(row=3, column=0, sticky="nsew", padx=8)
 
         self.build_action_bar(body)
-        self.build_market_sections(parent)
+        self.build_market_sections(bottom_wrap)
         self.render_tab()
         self.render_market_sections()
 
     def build_market_sections(self, parent):
         market = tk.Frame(parent, bg=BG)
-        market.grid(row=2, column=0, sticky="nsew", pady=(0, 8))
+        market.pack(fill="both", expand=True)
         market.grid_columnconfigure(0, weight=1, uniform="market")
         market.grid_columnconfigure(1, weight=1, uniform="market")
         market.grid_rowconfigure(0, weight=1)
@@ -720,6 +738,8 @@ class SoccerEdgeApp:
         self.score_labels["status"].pack()
         self.score_labels["edge"] = tk.Label(center, text="+0.0", bg=PANEL_DARK, fg=TEXT, font=FONT_MONO_SMALL, padx=10, pady=3)
         self.score_labels["edge"].pack(pady=(5, 0))
+        self.score_labels["replay_state"] = tk.Label(center, text="", bg=PANEL, fg=MUTED, font=FONT_SMALL)
+        self.score_labels["replay_state"].pack(pady=(4, 0))
 
         away_box = tk.Frame(score, bg=PANEL)
         away_box.grid(row=0, column=2, sticky="nsew")
@@ -780,7 +800,16 @@ class SoccerEdgeApp:
             btn.grid(row=0, column=idx, sticky="ew")
 
     def center_tabs(self):
-        return ["Overview", "Replay", "Attack", "Control", "Defense", "Line-ups", "Table", "H2H"]
+        return ["Overview", "Stats Replay", "Attack", "Control", "Defense", "Line-ups", "Table", "H2H"]
+
+    def on_center_split_configure(self, _event=None):
+        if self.center_split_initialized or self.center_split is None:
+            return
+        height = self.center_split.winfo_height()
+        if height <= 1:
+            return
+        self.center_split.sash_place(0, 0, int(height * 0.7))
+        self.center_split_initialized = True
 
     def rebuild_tabs(self):
         parent = self.tab_content.master
@@ -1001,6 +1030,7 @@ class SoccerEdgeApp:
         self.meta_labels["date"].config(text=match["date"])
         self.meta_labels["venue"].config(text=match["venue"])
         self.meta_labels["referee"].config(text=match["referee"])
+        self.update_replay_header()
         self.render_tab()
         self.render_decision_engine()
         self.render_data_quality()
@@ -1021,6 +1051,7 @@ class SoccerEdgeApp:
         self.tab_name.set(name)
         self.rebuild_tabs()
         self.render_tab()
+        self.update_replay_header()
 
     def render_tab(self):
         for child in self.tab_content.winfo_children():
@@ -1031,7 +1062,7 @@ class SoccerEdgeApp:
         tab = self.tab_name.get()
         if tab == "Overview":
             self.render_overview_tab(body, match)
-        elif tab == "Replay":
+        elif tab == "Stats Replay":
             self.render_stats_tab(body, match)
         elif tab == "Attack":
             self.render_attack_tab(body, match)
@@ -1111,6 +1142,14 @@ class SoccerEdgeApp:
             anchor="w",
         ).pack(fill="x", pady=(0, 4))
 
+    def update_replay_header(self):
+        minute = self.current_replay_minute(self.current_match)
+        match_minute = self.stats_reference_minute(self.current_match)
+        text = f"Viewing {minute:02d}' replay"
+        if minute == match_minute:
+            text = f"Viewing current state {minute:02d}'"
+        self.score_labels["replay_state"].config(text=text)
+
     def draw_timeline_markers(self, canvas, match, max_minute):
         canvas.delete("all")
         width = max(canvas.winfo_width(), 10)
@@ -1120,12 +1159,14 @@ class SoccerEdgeApp:
         canvas.create_line(left_pad, line_y, width - right_pad, line_y, fill=BORDER, width=2)
 
         events = self.timeline_events(match, max_minute)
-        for event in events:
+        for idx, event in enumerate(events):
             x = left_pad + ((width - left_pad - right_pad) * event["minute"] / max(max_minute, 1))
             color = self.event_color(event["event"])
-            canvas.create_line(x, 4, x, 18, fill=color, width=2)
-            canvas.create_oval(x - 3, line_y - 3, x + 3, line_y + 3, fill=color, outline=color)
-            canvas.create_text(x, 23, text=event["minute_text"], fill=MUTED, font=FONT_SMALL)
+            tag = f"marker_{idx}"
+            canvas.create_line(x, 4, x, 18, fill=color, width=2, tags=(tag,))
+            canvas.create_oval(x - 3, line_y - 3, x + 3, line_y + 3, fill=color, outline=color, tags=(tag,))
+            canvas.create_text(x, 23, text=event["minute_text"], fill=MUTED, font=FONT_SMALL, tags=(tag,))
+            canvas.tag_bind(tag, "<Button-1>", lambda _event, minute=event["minute"]: self.jump_to_replay_minute(minute))
 
     def event_color(self, event_name):
         color_map = {
@@ -1245,6 +1286,11 @@ class SoccerEdgeApp:
 
     def close_player_detail(self):
         self.selected_player_detail = None
+        self.render_tab()
+
+    def jump_to_replay_minute(self, minute):
+        self.replay_minute = minute
+        self.update_replay_header()
         self.render_tab()
 
     def render_info_rows(self, parent, rows):
@@ -1757,21 +1803,34 @@ class SoccerEdgeApp:
             detail.pack(side="left", fill="x", expand=True)
 
     def render_lineups_tab(self, parent, match):
-        self.section_title(parent, f"{match['home'].upper()}  4-3-3")
-        pitch = tk.Frame(parent, bg="#4d7112", highlightbackground="#8aaa42", highlightthickness=1)
-        pitch.pack(fill="both", expand=True, pady=(0, 8))
-        home_names = ["Keeper", "Right Back", "Center Back", "Center Back", "Left Back", "Midfielder", "Anchor", "Midfielder", "Winger", "Striker", "Winger"]
-        away_names = ["Forward", "Forward", "Midfielder", "Midfielder", "Midfielder", "Wing Back", "Center Back", "Center Back", "Center Back", "Wing Back", "Keeper"]
-        self.formation_line(pitch, [home_names[0]], "#111827", TEXT)
-        self.formation_line(pitch, home_names[1:5], "#111827", TEXT)
-        self.formation_line(pitch, home_names[5:8], "#111827", TEXT)
-        self.formation_line(pitch, home_names[8:11], "#111827", TEXT)
-        tk.Frame(pitch, bg="#8aaa42", height=1).pack(fill="x", padx=10, pady=8)
-        self.formation_line(pitch, away_names[0:2], TEXT, "#111827")
-        self.formation_line(pitch, away_names[2:5], TEXT, "#111827")
-        self.formation_line(pitch, away_names[5:10], TEXT, "#111827")
-        self.formation_line(pitch, [away_names[10]], TEXT, "#111827")
-        self.section_title(parent, f"{match['away'].upper()}  3-5-2")
+        minute = self.current_replay_minute(match)
+        max_minute = self.stats_max_minute(match)
+        self.section_title(parent, "LINE-UPS & SHAPE")
+        self.render_replay_state_note(parent, minute, max_minute)
+
+        summary = self.info_card(parent)
+        summary_row = tk.Frame(summary, bg=PANEL_DARK)
+        summary_row.pack(fill="x", padx=10, pady=8)
+        for label, value in [
+            (match["home"], self.lineup_formation(match, "home", minute)),
+            ("Replay", f"{minute:02d}'"),
+            (match["away"], self.lineup_formation(match, "away", minute)),
+        ]:
+            box = tk.Frame(summary_row, bg="#243244")
+            box.pack(side="left", expand=True, fill="x", padx=3)
+            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
+            tk.Label(box, text=value, bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 6))
+
+        pitch_card = self.info_card(parent)
+        pitch = tk.Canvas(pitch_card, bg="#56761b", height=760, highlightthickness=0)
+        pitch.pack(fill="both", expand=True, padx=8, pady=8)
+        self.draw_vertical_pitch(pitch, match, minute)
+
+        notes = self.info_card(parent)
+        notes.pack(fill="x", pady=(0, 4))
+        tk.Label(notes, text="LINE-UP NOTES", bg=PANEL_DARK, fg=CYAN, font=FONT_BOLD, anchor="w").pack(fill="x", padx=10, pady=(8, 4))
+        for line in self.lineup_notes(match, minute):
+            tk.Label(notes, text=f"+ {line}", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", padx=10, pady=2)
 
     def render_table_tab(self, parent, match):
         self.section_title(parent, f"{match['league']} TABLE")
@@ -1852,6 +1911,116 @@ class SoccerEdgeApp:
             slot.pack(side="left", expand=True)
             tk.Label(slot, text=str(idx), bg=circle_bg, fg=circle_fg, font=FONT_BOLD, width=3, pady=4).pack()
             tk.Label(slot, text=player, bg="#4d7112", fg=TEXT, font=FONT_SMALL).pack()
+
+    def lineup_formation(self, match, side, minute):
+        if side == "home":
+            return "4-3-3" if minute < 58 else "4-2-3-1"
+        return "3-5-2" if minute < 63 else "4-4-2"
+
+    def lineup_players(self, match, side, minute):
+        if side == "home":
+            players = [
+                {"name": "Ederson", "number": 31, "x": 0.50, "y": 0.92},
+                {"name": "Walker", "number": 2, "x": 0.18, "y": 0.79},
+                {"name": "Dias", "number": 3, "x": 0.38, "y": 0.76},
+                {"name": "Gvardiol", "number": 24, "x": 0.62, "y": 0.76},
+                {"name": "Ake", "number": 6, "x": 0.82, "y": 0.79},
+                {"name": "Rodri", "number": 16, "x": 0.50, "y": 0.63},
+                {"name": "De Bruyne", "number": 17, "x": 0.30, "y": 0.57},
+                {"name": "Bernardo", "number": 20, "x": 0.70, "y": 0.57},
+                {"name": "Foden", "number": 47, "x": 0.20, "y": 0.38},
+                {"name": "Haaland", "number": 9, "x": 0.50, "y": 0.31},
+                {"name": "Doku", "number": 11, "x": 0.80, "y": 0.38},
+            ]
+            if minute >= 58:
+                players[10] = {"name": "Grealish", "number": 10, "x": 0.80, "y": 0.44, "sub": True}
+                players[6] = {"name": "Kovacic", "number": 8, "x": 0.34, "y": 0.60, "sub": True}
+            return players
+
+        players = [
+            {"name": "Alisson", "number": 1, "x": 0.50, "y": 0.08},
+            {"name": "Konate", "number": 5, "x": 0.24, "y": 0.19},
+            {"name": "Van Dijk", "number": 4, "x": 0.50, "y": 0.16},
+            {"name": "Robertson", "number": 26, "x": 0.76, "y": 0.19},
+            {"name": "Alexander-Arnold", "number": 66, "x": 0.12, "y": 0.32},
+            {"name": "Mac Allister", "number": 10, "x": 0.34, "y": 0.30},
+            {"name": "Szoboszlai", "number": 8, "x": 0.50, "y": 0.28},
+            {"name": "Gravenberch", "number": 38, "x": 0.66, "y": 0.30},
+            {"name": "Diaz", "number": 7, "x": 0.88, "y": 0.32},
+            {"name": "Salah", "number": 11, "x": 0.36, "y": 0.47},
+            {"name": "Nunez", "number": 9, "x": 0.64, "y": 0.47},
+        ]
+        if minute >= 63:
+            players[9] = {"name": "Jota", "number": 20, "x": 0.34, "y": 0.44, "sub": True}
+            players[6] = {"name": "Jones", "number": 17, "x": 0.50, "y": 0.28, "sub": True}
+        return players
+
+    def draw_vertical_pitch(self, canvas, match, minute):
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 780)
+        height = max(canvas.winfo_height(), 760)
+        margin = 24
+
+        canvas.create_rectangle(margin, margin, width - margin, height - margin, outline="#d5e59b", width=2)
+        canvas.create_line(margin, height / 2, width - margin, height / 2, fill="#d5e59b", width=2)
+        canvas.create_oval(width / 2 - 58, height / 2 - 58, width / 2 + 58, height / 2 + 58, outline="#d5e59b", width=2)
+        canvas.create_oval(width / 2 - 4, height / 2 - 4, width / 2 + 4, height / 2 + 4, fill="#d5e59b", outline="")
+
+        self.draw_penalty_box(canvas, width, height, margin, top=True)
+        self.draw_penalty_box(canvas, width, height, margin, top=False)
+
+        home_players = self.lineup_players(match, "home", minute)
+        away_players = self.lineup_players(match, "away", minute)
+
+        canvas.create_text(margin + 8, height - 8, text=f"{match['home']}  {self.lineup_formation(match, 'home', minute)}", fill=TEXT, font=FONT_BOLD, anchor="sw")
+        canvas.create_text(margin + 8, 8, text=f"{match['away']}  {self.lineup_formation(match, 'away', minute)}", fill=TEXT, font=FONT_BOLD, anchor="nw")
+
+        self.draw_team_on_pitch(canvas, home_players, width, height, margin, is_home=True)
+        self.draw_team_on_pitch(canvas, away_players, width, height, margin, is_home=False)
+
+    def draw_penalty_box(self, canvas, width, height, margin, top=True):
+        if top:
+            y0 = margin
+            y1 = margin + 120
+            six_y1 = margin + 52
+        else:
+            y0 = height - margin - 120
+            y1 = height - margin
+            six_y1 = height - margin - 52
+        canvas.create_rectangle(width * 0.22, y0, width * 0.78, y1, outline="#d5e59b", width=2)
+        if top:
+            canvas.create_rectangle(width * 0.38, y0, width * 0.62, six_y1, outline="#d5e59b", width=2)
+        else:
+            canvas.create_rectangle(width * 0.38, six_y1, width * 0.62, y1, outline="#d5e59b", width=2)
+
+    def draw_team_on_pitch(self, canvas, players, width, height, margin, is_home):
+        circle_fill = "#101826" if is_home else "#f8fafc"
+        text_fill = TEXT if is_home else "#0f172a"
+        accent = ORANGE if is_home else CYAN
+        usable_w = width - (margin * 2)
+        usable_h = height - (margin * 2)
+
+        for player in players:
+            x = margin + usable_w * player["x"]
+            y = margin + usable_h * player["y"]
+            radius = 18
+            if player.get("sub"):
+                canvas.create_oval(x - radius - 4, y - radius - 4, x + radius + 4, y + radius + 4, outline=accent, width=2)
+            canvas.create_oval(x - radius, y - radius, x + radius, y + radius, fill=circle_fill, outline="")
+            canvas.create_text(x, y, text=str(player["number"]), fill=text_fill, font=FONT_BOLD)
+            canvas.create_text(x, y + 28, text=player["name"], fill=TEXT, font=FONT_SMALL)
+
+    def lineup_notes(self, match, minute):
+        notes = [
+            f"Replay minute {minute:02d}' drives the shape shown on the pitch.",
+            "Substitutions are highlighted with an outer ring so formation changes are easy to spot.",
+            "This pitch is meant to work with the replay slider, not as a separate frozen view.",
+        ]
+        if minute >= 58:
+            notes.append(f"{match['home']} has already made an attacking adjustment by this point.")
+        if minute >= 63:
+            notes.append(f"{match['away']} has already reshaped the front line by this point.")
+        return notes
 
     def match_events(self, match):
         if match["status"] == "LIVE":
