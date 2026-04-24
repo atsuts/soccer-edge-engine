@@ -433,6 +433,8 @@ class SoccerEdgeApp:
         self.replay_refresh = None
         self.replay_max_minute = 0
         self.quick_query = tk.StringVar(value="")
+        self.chat_message = tk.StringVar(value="")
+        self.match_chats = {}
         self.center_split = None
         self.center_split_initialized = False
         self.recommendation_body = None
@@ -808,7 +810,7 @@ class SoccerEdgeApp:
             btn.grid(row=0, column=idx, sticky="ew")
 
     def center_tabs(self):
-        return ["Overview", "Stats Replay", "Attack", "Control", "Defense", "Line-ups", "Table", "H2H"]
+        return ["Overview", "Stats Replay", "Attack", "Control", "Defense", "Line-ups", "Chat", "Table", "H2H"]
 
     def on_center_split_configure(self, _event=None):
         if self.center_split_initialized or self.center_split is None:
@@ -1116,6 +1118,8 @@ class SoccerEdgeApp:
             self.render_defense_tab(body, match)
         elif tab == "Line-ups":
             self.render_lineups_tab(body, match)
+        elif tab == "Chat":
+            self.render_chat_tab(body, match)
         elif tab == "Table":
             self.render_table_tab(body, match)
         elif tab == "H2H":
@@ -1222,6 +1226,7 @@ class SoccerEdgeApp:
 
     def resolve_quick_find_target(self, query):
         mappings = [
+            (("chat", "room", "debate", "talk"), "Chat", "match chat"),
             (("lineup", "line-ups", "formation", "player"), "Line-ups", "Line-ups"),
             (("table", "standings", "rank"), "Table", "league table"),
             (("h2h", "head to head", "previous"), "H2H", "head-to-head"),
@@ -1988,6 +1993,94 @@ class SoccerEdgeApp:
         for line in self.lineup_notes(match, minute):
             tk.Label(notes, text=f"+ {line}", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", padx=10, pady=2)
 
+    def render_chat_tab(self, parent, match):
+        self.section_title(parent, "MATCH CHAT")
+        minute = self.current_replay_minute(match)
+        room = self.info_card(parent)
+        top = tk.Frame(room, bg=PANEL_DARK)
+        top.pack(fill="x", padx=10, pady=(8, 4))
+        tk.Label(
+            top,
+            text=f"{match['home']} vs {match['away']}  |  dedicated room",
+            bg=PANEL_DARK,
+            fg=TEXT,
+            font=FONT_BOLD,
+            anchor="w",
+        ).pack(side="left")
+        tk.Label(
+            top,
+            text=f"Replay {minute:02d}'",
+            bg=PANEL_DARK,
+            fg=ORANGE,
+            font=FONT_BOLD,
+            anchor="e",
+        ).pack(side="right")
+        tk.Label(
+            room,
+            text="This thread follows the match before, during, and after. Open takes, live reactions, and agent notes all stay attached to this match.",
+            bg=PANEL_DARK,
+            fg=MUTED,
+            font=FONT_SMALL,
+            anchor="w",
+            justify="left",
+            padx=10,
+            pady=2,
+        ).pack(fill="x", pady=(0, 8))
+
+        rooms = tk.Frame(parent, bg=PANEL)
+        rooms.pack(fill="x", pady=(0, 6))
+        for text, active in [("Open Room", True), ("Value Talk", False), ("Live Pulse", False)]:
+            tk.Label(
+                rooms,
+                text=text,
+                bg=TEXT if active else PANEL_DARK,
+                fg=BG if active else MUTED,
+                font=FONT_BOLD,
+                padx=14,
+                pady=6,
+            ).pack(side="left", padx=(0, 8))
+
+        feed = self.info_card(parent)
+        feed.pack(fill="both", expand=True, pady=(0, 6))
+        chat_canvas = tk.Canvas(feed, bg=PANEL_DARK, height=360, highlightthickness=0)
+        chat_scroll = tk.Scrollbar(feed, orient="vertical", command=chat_canvas.yview)
+        chat_canvas.configure(yscrollcommand=chat_scroll.set)
+        chat_canvas.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
+        chat_scroll.pack(side="right", fill="y", padx=(0, 8), pady=8)
+
+        feed_body = tk.Frame(chat_canvas, bg=PANEL_DARK)
+        window_id = chat_canvas.create_window((0, 0), window=feed_body, anchor="nw")
+
+        def on_feed_configure(_event):
+            chat_canvas.configure(scrollregion=chat_canvas.bbox("all"))
+
+        def on_canvas_configure(event):
+            chat_canvas.itemconfigure(window_id, width=event.width)
+
+        feed_body.bind("<Configure>", on_feed_configure)
+        chat_canvas.bind("<Configure>", on_canvas_configure)
+
+        for item in self.chat_thread(match):
+            self.render_chat_message(feed_body, item)
+
+        compose = self.info_card(parent)
+        compose.pack(fill="x", pady=(0, 4))
+        row = tk.Frame(compose, bg=PANEL_DARK)
+        row.pack(fill="x", padx=10, pady=10)
+        entry = tk.Entry(
+            row,
+            textvariable=self.chat_message,
+            bg="#0f172a",
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+            font=FONT_SMALL,
+        )
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 8), ipady=7)
+        entry.bind("<Return>", lambda _event, current=match: self.post_chat_message(current))
+        self.button(row, "Post", CYAN_DARK, lambda current=match: self.post_chat_message(current), width=10, pady=7).pack(side="left", padx=(0, 6))
+        self.button(row, "Agent Note", ORANGE, lambda current=match: self.add_agent_note(current), width=12, pady=7).pack(side="left")
+
     def render_table_tab(self, parent, match):
         self.section_title(parent, f"{match['league']} TABLE")
         table = self.info_card(parent)
@@ -2034,6 +2127,88 @@ class SoccerEdgeApp:
                 tk.Label(row, text=self.team_initials(team), bg=PANEL_DARK, fg=MUTED, font=FONT_MONO_SMALL, width=6).pack(side="left")
                 tk.Label(row, text=team, bg=PANEL_DARK, fg=TEXT, font=FONT_UI, anchor="w").pack(side="left", fill="x", expand=True)
                 tk.Label(row, text=str(score), bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, width=4).pack(side="right")
+
+    def chat_thread(self, match):
+        if match["id"] not in self.match_chats:
+            self.match_chats[match["id"]] = self.seed_chat_thread(match)
+        return self.match_chats[match["id"]]
+
+    def seed_chat_thread(self, match):
+        minute = self.stats_reference_minute(match)
+        status_text = "pre-match room is open" if match["status"] == "UP" else f"live room rolling at {minute:02d}'"
+        return [
+            {
+                "author": "EdgeAgent",
+                "tag": "agent",
+                "time": "now",
+                "text": f"{match['home']} vs {match['away']} {status_text}. Market edge is {match['edge']:+.1f}; good room to track price vs momentum.",
+            },
+            {
+                "author": "ValueHunter",
+                "tag": "community",
+                "time": "now",
+                "text": f"I want to see whether {match['away']} keeps the same pressure level if this reaches the last 20 minutes.",
+            },
+            {
+                "author": "MatchPulse",
+                "tag": "community",
+                "time": "now",
+                "text": "Thread stays attached to this match before kickoff, during live play, and after full-time.",
+            },
+        ]
+
+    def render_chat_message(self, parent, item):
+        bubble = tk.Frame(parent, bg=PANEL_DARK)
+        bubble.pack(fill="x", padx=10, pady=4)
+        top = tk.Frame(bubble, bg=PANEL_DARK)
+        top.pack(fill="x")
+        color = ORANGE if item["tag"] == "agent" else CYAN
+        tk.Label(top, text=item["author"], bg=PANEL_DARK, fg=color, font=FONT_BOLD, anchor="w").pack(side="left")
+        tk.Label(top, text=item["time"], bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="e").pack(side="right")
+        tk.Label(
+            bubble,
+            text=item["text"],
+            bg=PANEL_DARK,
+            fg=TEXT,
+            font=FONT_SMALL,
+            anchor="w",
+            justify="left",
+            wraplength=720,
+        ).pack(fill="x", pady=(2, 0))
+        tk.Frame(bubble, bg="#243244", height=1).pack(fill="x", pady=(8, 0))
+
+    def post_chat_message(self, match):
+        text = self.chat_message.get().strip()
+        if not text:
+            self.tracker_status.config(text="Type a message for this match thread first.", fg=MUTED)
+            return
+        thread = self.chat_thread(match)
+        thread.append({"author": "You", "tag": "you", "time": "now", "text": text})
+        thread.append(self.agent_chat_reply(match, text))
+        self.chat_message.set("")
+        self.tracker_status.config(text=f"Posted into {match['home']} vs {match['away']} chat.", fg=GREEN)
+        if self.tab_name.get() == "Chat":
+            self.render_tab()
+
+    def add_agent_note(self, match):
+        thread = self.chat_thread(match)
+        thread.append(self.agent_chat_reply(match, "agent note"))
+        self.tracker_status.config(text=f"Agent note added to {match['home']} vs {match['away']} chat.", fg=CYAN)
+        if self.tab_name.get() == "Chat":
+            self.render_tab()
+
+    def agent_chat_reply(self, match, prompt_text):
+        minute = self.current_replay_minute(match)
+        lower = prompt_text.lower()
+        if "shot" in lower or "xg" in lower:
+            text = f"EdgeAgent: at {minute:02d}' the shot/xG angle still leans toward the {self.resolve_quick_find_target('shots')[1]} view. Quick Find can jump there fast."
+        elif "line" in lower or "odds" in lower or "price" in lower:
+            text = f"EdgeAgent: the book side is still worth checking against the current room take. Right panel has the discrepancy view, and this thread can debate whether it is real or noise."
+        elif "lineup" in lower or "sub" in lower:
+            text = f"EdgeAgent: lineup shape at {minute:02d}' is live in the Line-ups tab now, and sub rings highlight the changes."
+        else:
+            text = f"EdgeAgent: room note for {match['home']} vs {match['away']} at {minute:02d}' - keep the debate tied to replay minute, market move, and whether the pressure is translating into real edge."
+        return {"author": "EdgeAgent", "tag": "agent", "time": "now", "text": text}
 
     def mini_bar(self, parent, value, color):
         bar = tk.Frame(parent, bg="#334155", height=8)
