@@ -1077,6 +1077,73 @@ class SoccerEdgeApp:
         card.pack(fill="x", pady=6)
         return card
 
+    def render_stat_summary_row(self, parent, summaries):
+        card = self.info_card(parent)
+        card.pack(fill="x", pady=(0, 8))
+        row = tk.Frame(card, bg=PANEL_DARK)
+        row.pack(fill="x", padx=10, pady=8)
+        for label, home_pct, away_pct in summaries:
+            box = tk.Frame(row, bg="#243244")
+            box.pack(side="left", expand=True, fill="x", padx=3)
+            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
+            tk.Label(box, text=f"{home_pct}% / {away_pct}%", bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 2))
+            strip = tk.Frame(box, bg="#1a2435", height=6)
+            strip.pack(fill="x", padx=10, pady=(2, 8))
+            left = max(1, int(home_pct))
+            right = max(1, int(away_pct))
+            strip.grid_columnconfigure(0, weight=left)
+            strip.grid_columnconfigure(1, weight=right)
+            tk.Frame(strip, bg=CYAN, height=6).grid(row=0, column=0, sticky="ew")
+            tk.Frame(strip, bg=ORANGE, height=6).grid(row=0, column=1, sticky="ew")
+        return card
+
+    def draw_timeline_markers(self, canvas, match, max_minute):
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 10)
+        height = max(canvas.winfo_height(), 26)
+        left_pad = 6
+        right_pad = 6
+        line_y = 11
+        canvas.create_line(left_pad, line_y, width - right_pad, line_y, fill=BORDER, width=2)
+
+        events = self.timeline_events(match, max_minute)
+        for event in events:
+            x = left_pad + ((width - left_pad - right_pad) * event["minute"] / max(max_minute, 1))
+            color = ORANGE if event["event"] == "GOAL" else YELLOW if event["event"] == "CARD" else CYAN
+            canvas.create_line(x, 4, x, 18, fill=color, width=2)
+            canvas.create_oval(x - 3, line_y - 3, x + 3, line_y + 3, fill=color, outline=color)
+            canvas.create_text(x, 23, text=event["minute_text"], fill=MUTED, font=FONT_SMALL)
+
+    def render_player_panels(self, parent, left_title, left_rows, right_title, right_rows, accent):
+        wrap = tk.Frame(parent, bg=PANEL)
+        wrap.pack(fill="x", pady=(0, 6))
+        left = self.info_card(wrap)
+        right = self.info_card(wrap)
+        left.pack_forget()
+        right.pack_forget()
+        left.grid(in_=wrap, row=0, column=0, sticky="nsew", padx=(0, 4))
+        right.grid(in_=wrap, row=0, column=1, sticky="nsew", padx=(4, 0))
+        wrap.grid_columnconfigure(0, weight=1)
+        wrap.grid_columnconfigure(1, weight=1)
+        self.render_player_panel(left, left_title, left_rows, accent)
+        self.render_player_panel(right, right_title, right_rows, accent)
+
+    def render_player_panel(self, parent, title, rows, accent):
+        header = tk.Frame(parent, bg=PANEL_DARK)
+        header.pack(fill="x", padx=10, pady=(8, 4))
+        tk.Label(header, text=title, bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(side="left")
+        tk.Frame(header, bg=accent, width=26, height=4).pack(side="right", pady=6)
+
+        for name, stat_line in rows:
+            row = tk.Frame(parent, bg=PANEL_DARK)
+            row.pack(fill="x", padx=10, pady=3)
+            badge = tk.Label(row, text=self.team_initials(name)[:2], bg="#243244", fg=TEXT, font=FONT_MONO_SMALL, width=4, pady=4)
+            badge.pack(side="left")
+            text_wrap = tk.Frame(row, bg=PANEL_DARK)
+            text_wrap.pack(side="left", fill="x", expand=True, padx=(8, 0))
+            tk.Label(text_wrap, text=name, bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, anchor="w").pack(fill="x")
+            tk.Label(text_wrap, text=stat_line, bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(fill="x")
+
     def render_info_rows(self, parent, rows):
         for label, home, away in rows:
             row = tk.Frame(parent, bg=PANEL)
@@ -1123,20 +1190,7 @@ class SoccerEdgeApp:
         max_minute = self.stats_max_minute(match)
 
         self.section_title(parent, "MATCH OVERVIEW")
-        summary = self.info_card(parent)
-        summary_row = tk.Frame(summary, bg=PANEL_DARK)
-        summary_row.pack(fill="x", padx=10, pady=8)
-        for label, home_pct, away_pct in self.stats_summary_percentages(match, minute, max_minute):
-            box = tk.Frame(summary_row, bg="#243244")
-            box.pack(side="left", expand=True, fill="x", padx=3)
-            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
-            tk.Label(
-                box,
-                text=f"{home_pct}% / {away_pct}%",
-                bg="#243244",
-                fg=TEXT,
-                font=FONT_BOLD,
-            ).pack(pady=(0, 6))
+        self.render_stat_summary_row(parent, self.stats_summary_percentages(match, minute, max_minute))
 
         self.section_title(parent, "MATCH DETAILS")
         details = self.info_card(parent)
@@ -1166,8 +1220,10 @@ class SoccerEdgeApp:
 
         self.section_title(parent, "KEY EDGE SNAPSHOT")
         highlight_stats = self.match_stats_at_minute(match, minute, max_minute)[:6]
+        snapshot = self.info_card(parent)
+        snapshot.pack(fill="x", pady=(0, 4))
         for label, home, away in highlight_stats:
-            self.stat_bar(parent, label, home, away)
+            self.stat_bar(snapshot, label, home, away)
 
     def render_market_sections(self):
         if self.odds_body is None or self.predictions_body is None:
@@ -1416,18 +1472,12 @@ class SoccerEdgeApp:
 
         self.section_title(parent, "MATCH STATS TIMELINE")
 
-        summary = self.info_card(parent)
-        summary.pack(fill="x", pady=(0, 8))
-        summary_row = tk.Frame(summary, bg=PANEL_DARK)
-        summary_row.pack(fill="x", padx=10, pady=8)
+        summary = self.render_stat_summary_row(parent, self.stats_summary_percentages(match, max_minute))
         summary_labels = {}
-        for label, home_pct, away_pct in self.stats_summary_percentages(match, max_minute):
-            box = tk.Frame(summary_row, bg="#243244")
-            box.pack(side="left", expand=True, fill="x", padx=3)
-            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
-            value_label = tk.Label(box, text=f"{home_pct}% / {away_pct}%", bg="#243244", fg=TEXT, font=FONT_BOLD)
-            value_label.pack(pady=(0, 6))
-            summary_labels[label] = value_label
+        for box in summary.winfo_children()[0].winfo_children():
+            labels = [child for child in box.winfo_children() if isinstance(child, tk.Label)]
+            if len(labels) >= 2:
+                summary_labels[labels[0].cget("text")] = labels[1]
 
         slider_card = self.info_card(parent)
         slider_card.pack(fill="x", pady=(0, 8))
@@ -1467,6 +1517,9 @@ class SoccerEdgeApp:
         )
         helper.pack(fill="x", padx=10, pady=(0, 8))
 
+        markers = tk.Canvas(slider_card, bg=PANEL_DARK, height=26, highlightthickness=0)
+        markers.pack(fill="x", padx=10, pady=(0, 8))
+
         stats_frame = tk.Frame(parent, bg=PANEL)
         stats_frame.pack(fill="x")
 
@@ -1481,6 +1534,8 @@ class SoccerEdgeApp:
                 self.stat_bar(stats_frame, label, home, away)
 
         slider.configure(command=refresh_stats)
+        self.draw_timeline_markers(markers, match, max_minute)
+        markers.bind("<Configure>", lambda _event: self.draw_timeline_markers(markers, match, max_minute))
         slider.set(min(match["minute"], max_minute))
         refresh_stats(slider.get())
 
@@ -1489,54 +1544,59 @@ class SoccerEdgeApp:
         max_minute = self.stats_max_minute(match)
         self.section_title(parent, "ATTACK PROFILE")
 
-        summary = self.info_card(parent)
-        summary_row = tk.Frame(summary, bg=PANEL_DARK)
-        summary_row.pack(fill="x", padx=10, pady=8)
-        for label, home_pct, away_pct in self.attack_summary_percentages(match, minute, max_minute):
-            box = tk.Frame(summary_row, bg="#243244")
-            box.pack(side="left", expand=True, fill="x", padx=3)
-            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
-            tk.Label(box, text=f"{home_pct}% / {away_pct}%", bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 6))
+        self.render_stat_summary_row(parent, self.attack_summary_percentages(match, minute, max_minute))
 
         self.section_title(parent, "ATTACKING OUTPUT")
+        attack_card = self.info_card(parent)
+        attack_card.pack(fill="x", pady=(0, 4))
         for label, home, away in self.attack_stats(match, minute, max_minute):
-            self.stat_bar(parent, label, home, away)
+            self.stat_bar(attack_card, label, home, away)
+
+        self.section_title(parent, "ATTACK LEADERS")
+        self.render_player_panels(
+            parent,
+            match["home"],
+            self.attack_players(match, match["home"], minute, max_minute),
+            match["away"],
+            self.attack_players(match, match["away"], minute, max_minute),
+            ORANGE,
+        )
 
     def render_control_tab(self, parent, match):
         minute = self.stats_reference_minute(match)
         max_minute = self.stats_max_minute(match)
         self.section_title(parent, "CONTROL & TERRITORY")
 
-        summary = self.info_card(parent)
-        summary_row = tk.Frame(summary, bg=PANEL_DARK)
-        summary_row.pack(fill="x", padx=10, pady=8)
-        for label, home_pct, away_pct in self.control_summary_percentages(match, minute, max_minute):
-            box = tk.Frame(summary_row, bg="#243244")
-            box.pack(side="left", expand=True, fill="x", padx=3)
-            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
-            tk.Label(box, text=f"{home_pct}% / {away_pct}%", bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 6))
+        self.render_stat_summary_row(parent, self.control_summary_percentages(match, minute, max_minute))
 
         self.section_title(parent, "CONTROL STATS")
+        control_card = self.info_card(parent)
+        control_card.pack(fill="x", pady=(0, 4))
         for label, home, away in self.control_stats(match, minute, max_minute):
-            self.stat_bar(parent, label, home, away)
+            self.stat_bar(control_card, label, home, away)
 
     def render_defense_tab(self, parent, match):
         minute = self.stats_reference_minute(match)
         max_minute = self.stats_max_minute(match)
         self.section_title(parent, "DEFENSE & DISCIPLINE")
 
-        summary = self.info_card(parent)
-        summary_row = tk.Frame(summary, bg=PANEL_DARK)
-        summary_row.pack(fill="x", padx=10, pady=8)
-        for label, home_pct, away_pct in self.defense_summary_percentages(match, minute, max_minute):
-            box = tk.Frame(summary_row, bg="#243244")
-            box.pack(side="left", expand=True, fill="x", padx=3)
-            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
-            tk.Label(box, text=f"{home_pct}% / {away_pct}%", bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 6))
+        self.render_stat_summary_row(parent, self.defense_summary_percentages(match, minute, max_minute))
 
         self.section_title(parent, "DEFENSIVE STATS")
+        defense_card = self.info_card(parent)
+        defense_card.pack(fill="x", pady=(0, 4))
         for label, home, away in self.defense_stats(match, minute, max_minute):
-            self.stat_bar(parent, label, home, away)
+            self.stat_bar(defense_card, label, home, away)
+
+        self.section_title(parent, "DEFENSIVE LEADERS")
+        self.render_player_panels(
+            parent,
+            match["home"],
+            self.defense_players(match, match["home"], minute, max_minute),
+            match["away"],
+            self.defense_players(match, match["away"], minute, max_minute),
+            CYAN,
+        )
 
     def render_lineups_tab(self, parent, match):
         self.section_title(parent, f"{match['home'].upper()}  4-3-3")
@@ -1648,6 +1708,34 @@ class SoccerEdgeApp:
             ("37'", match["away"], "SHOT", "Counter attack wide"),
             ("FT", "", "SCORE", f"{match['home_score']} - {match['away_score']}"),
         ]
+
+    def timeline_events(self, match, max_minute):
+        events = []
+        for minute_text, team, event, detail in self.match_events(match):
+            minute = self.event_minute_value(minute_text, max_minute)
+            if minute is None:
+                continue
+            events.append(
+                {
+                    "minute": minute,
+                    "minute_text": minute_text,
+                    "team": team or "Match",
+                    "event": event,
+                    "detail": detail,
+                }
+            )
+        return events
+
+    def event_minute_value(self, minute_text, max_minute):
+        text = str(minute_text).strip().upper().replace("'", "")
+        if text == "HT":
+            return min(45, max_minute)
+        if text == "FT":
+            return max_minute
+        digits = "".join(ch for ch in text if ch.isdigit())
+        if not digits:
+            return None
+        return min(int(digits), max_minute)
 
     def match_stats(self, match):
         home_edge = max(match["edge"], 0)
@@ -1791,6 +1879,25 @@ class SoccerEdgeApp:
             ("Accuracy", accuracy_home, accuracy_away),
         ]
 
+    def attack_players(self, match, team, minute, max_minute):
+        ratio = 0 if max_minute <= 0 else max(0.0, min(minute / max_minute, 1.0))
+        if team == match["home"]:
+            names = ["Erling Haaland", "Phil Foden", "Kevin De Bruyne"]
+            xg_base = [0.38, 0.18, 0.14]
+            action_base = [4, 3, 5]
+        else:
+            names = ["Mohamed Salah", "Darwin Nunez", "Luis Diaz"]
+            xg_base = [0.34, 0.22, 0.16]
+            action_base = [4, 3, 4]
+
+        rows = []
+        for idx, name in enumerate(names):
+            xg = round(xg_base[idx] * (0.45 + ratio * 0.75), 2)
+            shots = max(1, int(round(action_base[idx] * (0.4 + ratio * 0.8))))
+            key_passes = max(0, int(round((action_base[idx] - 1) * (0.3 + ratio * 0.7))))
+            rows.append((name, f"xG {xg}  |  shots {shots}  |  key passes {key_passes}"))
+        return rows
+
     def control_stats(self, match, minute, max_minute):
         stats = self.stat_map(match, minute, max_minute)
         possession_home, possession_away = stats.get("Possession (%)", (50, 50))
@@ -1872,6 +1979,25 @@ class SoccerEdgeApp:
             ("Interceptions", *self.percentage_split(intercept_home, intercept_away)),
             ("Discipline", discipline_left, discipline_right),
         ]
+
+    def defense_players(self, match, team, minute, max_minute):
+        ratio = 0 if max_minute <= 0 else max(0.0, min(minute / max_minute, 1.0))
+        if team == match["home"]:
+            names = ["Ruben Dias", "Rodri", "Ederson"]
+            tackle_base = [3, 4, 1]
+            duel_base = [6, 7, 1]
+        else:
+            names = ["Virgil van Dijk", "Alexis Mac Allister", "Alisson"]
+            tackle_base = [3, 4, 1]
+            duel_base = [7, 6, 1]
+
+        rows = []
+        for idx, name in enumerate(names):
+            tackles = max(1, int(round(tackle_base[idx] * (0.35 + ratio * 0.85))))
+            duels = max(1, int(round(duel_base[idx] * (0.4 + ratio * 0.8))))
+            recoveries = max(1, int(round((duel_base[idx] + 2) * (0.4 + ratio * 0.9))))
+            rows.append((name, f"tackles {tackles}  |  duels {duels}  |  recoveries {recoveries}"))
+        return rows
 
     def percentage_split(self, left, right):
         total = left + right
