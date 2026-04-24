@@ -1,4 +1,5 @@
 import csv
+import re
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
@@ -431,6 +432,7 @@ class SoccerEdgeApp:
         self.replay_slider = None
         self.replay_refresh = None
         self.replay_max_minute = 0
+        self.quick_query = tk.StringVar(value="")
         self.center_split = None
         self.center_split_initialized = False
         self.recommendation_body = None
@@ -827,7 +829,7 @@ class SoccerEdgeApp:
         actions = tk.Frame(parent, bg=BG)
         actions.grid(row=4, column=0, sticky="ew", padx=8, pady=(8, 10))
         actions.grid_columnconfigure(0, weight=1)
-        actions.grid_columnconfigure(1, weight=1)
+        actions.grid_columnconfigure(1, weight=2)
         actions.grid_columnconfigure(2, weight=1)
 
         left = tk.Frame(actions, bg=BG)
@@ -835,7 +837,40 @@ class SoccerEdgeApp:
         self.button(left, "+ Add Watchlist", PURPLE, self.add_current_to_watchlist).pack(side="left", padx=(0, 6))
         self.button(left, "X Remove", GRAY_BTN, self.remove_current_from_watchlist).pack(side="left")
 
-        self.button(actions, "Analyze", "#5bc0de", self.run_analysis, width=12, pady=11).grid(row=0, column=1)
+        center = tk.Frame(actions, bg=BG)
+        center.grid(row=0, column=1, sticky="ew", padx=10)
+        center.grid_columnconfigure(0, weight=1)
+        ask_wrap = tk.Frame(center, bg="#243244", highlightbackground=BORDER, highlightthickness=1)
+        ask_wrap.grid(row=0, column=0, sticky="ew")
+        tk.Label(
+            ask_wrap,
+            text="Quick Find",
+            bg="#243244",
+            fg=CYAN,
+            font=FONT_BOLD,
+            padx=10,
+        ).pack(side="left")
+        entry = tk.Entry(
+            ask_wrap,
+            textvariable=self.quick_query,
+            bg="#0f172a",
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+            font=FONT_SMALL,
+        )
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 6), pady=7)
+        entry.bind("<Return>", lambda _event: self.quick_find())
+        self.button(ask_wrap, "Go", CYAN_DARK, self.quick_find, width=8, pady=7).pack(side="left", padx=(0, 6), pady=4)
+        self.button(ask_wrap, "Live", ORANGE, self.reset_replay_to_live, width=8, pady=7).pack(side="left", padx=(0, 6), pady=4)
+        tk.Label(
+            center,
+            text="Try: 35 minute shots, lineups, possession, table, h2h",
+            bg=BG,
+            fg=MUTED,
+            font=FONT_SMALL,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", pady=(4, 0))
 
         right = tk.Frame(actions, bg=BG)
         right.grid(row=0, column=2, sticky="e")
@@ -1160,6 +1195,51 @@ class SoccerEdgeApp:
         if self.replay_running:
             text = f"Playing replay from {self.replay_start_minute:02d}'  |  now {minute:02d}'"
         self.score_labels["replay_state"].config(text=text)
+
+    def quick_find(self):
+        query = self.quick_query.get().strip()
+        if not query:
+            self.tracker_status.config(
+                text="Try a quick jump like: 35 minute shots, lineups, table, h2h, or possession.",
+                fg=MUTED,
+            )
+            return
+
+        lower = query.lower()
+        minute = None
+        minute_match = re.search(r"(\d{1,3})", lower)
+        if minute_match:
+            minute = min(int(minute_match.group(1)), self.stats_max_minute(self.current_match))
+            self.set_replay_minute(minute)
+
+        tab, label = self.resolve_quick_find_target(lower)
+        if tab:
+            self.set_tab(tab)
+
+        minute_text = f" at {self.current_replay_minute(self.current_match):02d}'" if minute is not None else ""
+        message = f"Quick Find: opened {label}{minute_text}."
+        self.tracker_status.config(text=message, fg=CYAN)
+
+    def resolve_quick_find_target(self, query):
+        mappings = [
+            (("lineup", "line-ups", "formation", "player"), "Line-ups", "Line-ups"),
+            (("table", "standings", "rank"), "Table", "league table"),
+            (("h2h", "head to head", "previous"), "H2H", "head-to-head"),
+            (("attack", "shot", "shots", "xg", "chance", "goal"), "Attack", "attack profile"),
+            (("possession", "pass", "control", "territory", "corner", "cross"), "Control", "control profile"),
+            (("defense", "defence", "foul", "card", "save", "offside", "duel"), "Defense", "defense profile"),
+            (("replay", "timeline", "minute", "live"), "Stats Replay", "stats replay"),
+            (("overview", "summary", "info"), "Overview", "overview"),
+        ]
+        for terms, tab, label in mappings:
+            if any(term in query for term in terms):
+                return tab, label
+        return "Overview", "overview"
+
+    def reset_replay_to_live(self):
+        target = self.stats_reference_minute(self.current_match)
+        self.set_replay_minute(target)
+        self.tracker_status.config(text=f"Replay reset to current minute {target:02d}'.", fg=GREEN)
 
     def draw_timeline_markers(self, canvas, match, max_minute):
         canvas.delete("all")
