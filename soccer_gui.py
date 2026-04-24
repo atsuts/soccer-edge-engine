@@ -1822,9 +1822,9 @@ class SoccerEdgeApp:
             tk.Label(box, text=value, bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 6))
 
         pitch_card = self.info_card(parent)
-        pitch = tk.Canvas(pitch_card, bg="#56761b", height=760, highlightthickness=0)
+        pitch = tk.Canvas(pitch_card, bg="#56761b", height=560, highlightthickness=0)
         pitch.pack(fill="both", expand=True, padx=8, pady=8)
-        self.draw_vertical_pitch(pitch, match, minute)
+        self.draw_side_pitch(pitch, match, minute)
 
         notes = self.info_card(parent)
         notes.pack(fill="x", pady=(0, 4))
@@ -1955,45 +1955,45 @@ class SoccerEdgeApp:
             players[6] = {"name": "Jones", "number": 17, "x": 0.50, "y": 0.28, "sub": True}
         return players
 
-    def draw_vertical_pitch(self, canvas, match, minute):
+    def draw_side_pitch(self, canvas, match, minute):
         canvas.delete("all")
-        width = max(canvas.winfo_width(), 780)
-        height = max(canvas.winfo_height(), 760)
+        width = max(canvas.winfo_width(), 920)
+        height = max(canvas.winfo_height(), 560)
         margin = 24
 
         canvas.create_rectangle(margin, margin, width - margin, height - margin, outline="#d5e59b", width=2)
-        canvas.create_line(margin, height / 2, width - margin, height / 2, fill="#d5e59b", width=2)
+        canvas.create_line(width / 2, margin, width / 2, height - margin, fill="#d5e59b", width=2)
         canvas.create_oval(width / 2 - 58, height / 2 - 58, width / 2 + 58, height / 2 + 58, outline="#d5e59b", width=2)
         canvas.create_oval(width / 2 - 4, height / 2 - 4, width / 2 + 4, height / 2 + 4, fill="#d5e59b", outline="")
 
-        self.draw_penalty_box(canvas, width, height, margin, top=True)
-        self.draw_penalty_box(canvas, width, height, margin, top=False)
+        self.draw_side_penalty_box(canvas, width, height, margin, left_side=True)
+        self.draw_side_penalty_box(canvas, width, height, margin, left_side=False)
 
         home_players = self.lineup_players(match, "home", minute)
         away_players = self.lineup_players(match, "away", minute)
 
-        canvas.create_text(margin + 8, height - 8, text=f"{match['home']}  {self.lineup_formation(match, 'home', minute)}", fill=TEXT, font=FONT_BOLD, anchor="sw")
-        canvas.create_text(margin + 8, 8, text=f"{match['away']}  {self.lineup_formation(match, 'away', minute)}", fill=TEXT, font=FONT_BOLD, anchor="nw")
+        canvas.create_text(margin + 8, 10, text=f"{match['home']}  {self.lineup_formation(match, 'home', minute)}", fill=TEXT, font=FONT_BOLD, anchor="nw")
+        canvas.create_text(width - margin - 8, 10, text=f"{match['away']}  {self.lineup_formation(match, 'away', minute)}", fill=TEXT, font=FONT_BOLD, anchor="ne")
 
-        self.draw_team_on_pitch(canvas, home_players, width, height, margin, is_home=True)
-        self.draw_team_on_pitch(canvas, away_players, width, height, margin, is_home=False)
+        self.draw_team_side_pitch(canvas, home_players, width, height, margin, side="left", is_home=True)
+        self.draw_team_side_pitch(canvas, away_players, width, height, margin, side="right", is_home=False)
 
-    def draw_penalty_box(self, canvas, width, height, margin, top=True):
-        if top:
-            y0 = margin
-            y1 = margin + 120
-            six_y1 = margin + 52
+    def draw_side_penalty_box(self, canvas, width, height, margin, left_side=True):
+        if left_side:
+            x0 = margin
+            x1 = margin + 140
+            six_x1 = margin + 56
         else:
-            y0 = height - margin - 120
-            y1 = height - margin
-            six_y1 = height - margin - 52
-        canvas.create_rectangle(width * 0.22, y0, width * 0.78, y1, outline="#d5e59b", width=2)
-        if top:
-            canvas.create_rectangle(width * 0.38, y0, width * 0.62, six_y1, outline="#d5e59b", width=2)
+            x0 = width - margin - 140
+            x1 = width - margin
+            six_x1 = width - margin - 56
+        canvas.create_rectangle(x0, height * 0.22, x1, height * 0.78, outline="#d5e59b", width=2)
+        if left_side:
+            canvas.create_rectangle(x0, height * 0.38, six_x1, height * 0.62, outline="#d5e59b", width=2)
         else:
-            canvas.create_rectangle(width * 0.38, six_y1, width * 0.62, y1, outline="#d5e59b", width=2)
+            canvas.create_rectangle(six_x1, height * 0.38, x1, height * 0.62, outline="#d5e59b", width=2)
 
-    def draw_team_on_pitch(self, canvas, players, width, height, margin, is_home):
+    def draw_team_side_pitch(self, canvas, players, width, height, margin, side, is_home):
         circle_fill = "#101826" if is_home else "#f8fafc"
         text_fill = TEXT if is_home else "#0f172a"
         accent = ORANGE if is_home else CYAN
@@ -2001,8 +2001,10 @@ class SoccerEdgeApp:
         usable_h = height - (margin * 2)
 
         for player in players:
-            x = margin + usable_w * player["x"]
-            y = margin + usable_h * player["y"]
+            x_norm = 1 - player["y"] if side == "left" else player["y"]
+            y_norm = player["x"]
+            x = margin + usable_w * x_norm
+            y = margin + usable_h * y_norm
             radius = 18
             if player.get("sub"):
                 canvas.create_oval(x - radius - 4, y - radius - 4, x + radius + 4, y + radius + 4, outline=accent, width=2)
@@ -2013,6 +2015,7 @@ class SoccerEdgeApp:
     def lineup_notes(self, match, minute):
         notes = [
             f"Replay minute {minute:02d}' drives the shape shown on the pitch.",
+            f"{match['home']} is shown on the left and {match['away']} on the right.",
             "Substitutions are highlighted with an outer ring so formation changes are easy to spot.",
             "This pitch is meant to work with the replay slider, not as a separate frozen view.",
         ]
