@@ -435,11 +435,13 @@ class SoccerEdgeApp:
         self.quick_query = tk.StringVar(value="")
         self.chat_message = tk.StringVar(value="")
         self.match_chats = {}
+        self.match_chat_room = {}
         self.center_split = None
         self.center_split_initialized = False
         self.recommendation_body = None
         self.quality_body = None
         self.source_body = None
+        self.chat_preview_body = None
         self.filter_combos = {}
         self.matches_frame = None
         self.matches_canvas = None
@@ -889,6 +891,7 @@ class SoccerEdgeApp:
         parent.grid_rowconfigure(2, weight=1)
         parent.grid_rowconfigure(3, weight=2)
         parent.grid_rowconfigure(4, weight=2)
+        parent.grid_rowconfigure(5, weight=2)
 
         model_outer, self.recommendation_body = self.panel(parent, "DECISION ENGINE")
         model_outer.grid(row=0, column=0, sticky="nsew", pady=(8, 8))
@@ -900,15 +903,19 @@ class SoccerEdgeApp:
         watch_outer.grid(row=2, column=0, sticky="nsew", pady=(0, 8))
         self.sidebar_watch_body = body
 
+        chat_outer, self.chat_preview_body = self.panel(parent, "CHAT PREVIEW")
+        chat_outer.grid(row=3, column=0, sticky="nsew", pady=(0, 8))
+
         history_outer, self.source_body = self.panel(parent, "SOURCE MONITOR")
-        history_outer.grid(row=3, column=0, sticky="nsew", pady=(0, 8))
+        history_outer.grid(row=4, column=0, sticky="nsew", pady=(0, 8))
 
         acc_outer, self.accuracy_body = self.panel(parent, "ACCURACY DASHBOARD")
-        acc_outer.grid(row=4, column=0, sticky="nsew", pady=(0, 10))
+        acc_outer.grid(row=5, column=0, sticky="nsew", pady=(0, 10))
 
         self.render_decision_engine()
         self.render_data_quality()
         self.render_sidebar_watchlist()
+        self.render_chat_preview()
         self.render_source_monitor()
         self.render_accuracy()
 
@@ -1078,6 +1085,7 @@ class SoccerEdgeApp:
         self.render_tab()
         self.render_decision_engine()
         self.render_data_quality()
+        self.render_chat_preview()
         self.render_source_monitor()
         self.render_market_sections()
         if refresh:
@@ -1996,6 +2004,7 @@ class SoccerEdgeApp:
     def render_chat_tab(self, parent, match):
         self.section_title(parent, "MATCH CHAT")
         minute = self.current_replay_minute(match)
+        active_room = self.active_chat_room(match)
         room = self.info_card(parent)
         top = tk.Frame(room, bg=PANEL_DARK)
         top.pack(fill="x", padx=10, pady=(8, 4))
@@ -2029,16 +2038,22 @@ class SoccerEdgeApp:
 
         rooms = tk.Frame(parent, bg=PANEL)
         rooms.pack(fill="x", pady=(0, 6))
-        for text, active in [("Open Room", True), ("Value Talk", False), ("Live Pulse", False)]:
-            tk.Label(
+        for text in self.chat_rooms():
+            active = text == active_room
+            btn = tk.Button(
                 rooms,
                 text=text,
                 bg=TEXT if active else PANEL_DARK,
                 fg=BG if active else MUTED,
+                activebackground=TEXT if active else "#243244",
+                activeforeground=BG if active else TEXT,
                 font=FONT_BOLD,
                 padx=14,
                 pady=6,
-            ).pack(side="left", padx=(0, 8))
+                relief="flat",
+                command=lambda room_name=text, current=match: self.set_chat_room(current, room_name),
+            )
+            btn.pack(side="left", padx=(0, 8))
 
         feed = self.info_card(parent)
         feed.pack(fill="both", expand=True, pady=(0, 6))
@@ -2128,41 +2143,105 @@ class SoccerEdgeApp:
                 tk.Label(row, text=team, bg=PANEL_DARK, fg=TEXT, font=FONT_UI, anchor="w").pack(side="left", fill="x", expand=True)
                 tk.Label(row, text=str(score), bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, width=4).pack(side="right")
 
-    def chat_thread(self, match):
-        if match["id"] not in self.match_chats:
-            self.match_chats[match["id"]] = self.seed_chat_thread(match)
-        return self.match_chats[match["id"]]
+    def chat_rooms(self):
+        return ["Open Room", "Value Talk", "Live Pulse", "Post-match"]
 
-    def seed_chat_thread(self, match):
+    def active_chat_room(self, match):
+        if match["id"] not in self.match_chat_room:
+            self.match_chat_room[match["id"]] = "Open Room"
+        return self.match_chat_room[match["id"]]
+
+    def set_chat_room(self, match, room_name):
+        self.match_chat_room[match["id"]] = room_name
+        self.chat_message.set("")
+        self.render_chat_preview()
+        if self.tab_name.get() == "Chat":
+            self.render_tab()
+
+    def chat_thread(self, match):
+        if match["id"] not in self.match_chats or not isinstance(self.match_chats[match["id"]], dict):
+            self.match_chats[match["id"]] = self.seed_chat_rooms(match)
+        room = self.active_chat_room(match)
+        return self.match_chats[match["id"]].setdefault(room, [])
+
+    def seed_chat_rooms(self, match):
+        minute = self.stats_reference_minute(match)
+        return {
+            "Open Room": self.seed_chat_thread(match, "Open Room", minute),
+            "Value Talk": self.seed_chat_thread(match, "Value Talk", minute),
+            "Live Pulse": self.seed_chat_thread(match, "Live Pulse", minute),
+            "Post-match": self.seed_chat_thread(match, "Post-match", minute),
+        }
+
+    def seed_chat_thread(self, match, room_name, minute):
         minute = self.stats_reference_minute(match)
         status_text = "pre-match room is open" if match["status"] == "UP" else f"live room rolling at {minute:02d}'"
-        return [
-            {
-                "author": "EdgeAgent",
-                "tag": "agent",
-                "time": "now",
-                "text": f"{match['home']} vs {match['away']} {status_text}. Market edge is {match['edge']:+.1f}; good room to track price vs momentum.",
-            },
-            {
-                "author": "ValueHunter",
-                "tag": "community",
-                "time": "now",
-                "text": f"I want to see whether {match['away']} keeps the same pressure level if this reaches the last 20 minutes.",
-            },
-            {
-                "author": "MatchPulse",
-                "tag": "community",
-                "time": "now",
-                "text": "Thread stays attached to this match before kickoff, during live play, and after full-time.",
-            },
-        ]
+        seeds = {
+            "Open Room": [
+                {
+                    "author": "EdgeAgent",
+                    "tag": "agent",
+                    "time": self.chat_time_label(match),
+                    "text": f"{match['home']} vs {match['away']} {status_text}. Market edge is {match['edge']:+.1f}; good room to track price vs momentum.",
+                },
+                {
+                    "author": "ValueHunter",
+                    "tag": "community",
+                    "time": self.chat_time_label(match),
+                    "text": f"I want to see whether {match['away']} keeps the same pressure level if this reaches the last 20 minutes.",
+                },
+                {
+                    "author": "MatchPulse",
+                    "tag": "community",
+                    "time": self.chat_time_label(match),
+                    "text": "Thread stays attached to this match before kickoff, during live play, and after full-time.",
+                },
+            ],
+            "Value Talk": [
+                {
+                    "author": "EdgeAgent",
+                    "tag": "agent",
+                    "time": self.chat_time_label(match),
+                    "text": f"Value room open. Best angle right now is how the {match['edge']:+.1f} edge compares to available book prices.",
+                },
+                {
+                    "author": "PriceWatcher",
+                    "tag": "community",
+                    "time": self.chat_time_label(match),
+                    "text": "I only care whether the line is behind the state of the match. Everything else is noise until price moves.",
+                },
+            ],
+            "Live Pulse": [
+                {
+                    "author": "EdgeAgent",
+                    "tag": "agent",
+                    "time": self.chat_time_label(match),
+                    "text": f"Live pulse room at {minute:02d}'. Use this for momentum, pressure swings, and replay-minute reactions.",
+                },
+                {
+                    "author": "PulseCheck",
+                    "tag": "community",
+                    "time": self.chat_time_label(match),
+                    "text": "The room should follow the replay minute so people are arguing about the same state, not different moments.",
+                },
+            ],
+            "Post-match": [
+                {
+                    "author": "EdgeAgent",
+                    "tag": "agent",
+                    "time": self.chat_time_label(match),
+                    "text": "Post-match room is ready. Good place for reviewing what the market, replay, and final result actually said.",
+                },
+            ],
+        }
+        return seeds.get(room_name, seeds["Open Room"])
 
     def render_chat_message(self, parent, item):
         bubble = tk.Frame(parent, bg=PANEL_DARK)
         bubble.pack(fill="x", padx=10, pady=4)
         top = tk.Frame(bubble, bg=PANEL_DARK)
         top.pack(fill="x")
-        color = ORANGE if item["tag"] == "agent" else CYAN
+        color = ORANGE if item["tag"] == "agent" else GREEN if item["tag"] == "you" else CYAN
         tk.Label(top, text=item["author"], bg=PANEL_DARK, fg=color, font=FONT_BOLD, anchor="w").pack(side="left")
         tk.Label(top, text=item["time"], bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="e").pack(side="right")
         tk.Label(
@@ -2177,16 +2256,60 @@ class SoccerEdgeApp:
         ).pack(fill="x", pady=(2, 0))
         tk.Frame(bubble, bg="#243244", height=1).pack(fill="x", pady=(8, 0))
 
+    def chat_time_label(self, match):
+        minute = self.current_replay_minute(match)
+        if match["status"] == "UP" and minute == 0:
+            return "Pre | now"
+        return f"{minute:02d}' | now"
+
+    def render_chat_preview(self):
+        if self.chat_preview_body is None:
+            return
+        self.clear(self.chat_preview_body)
+        match = self.current_match
+        room = self.active_chat_room(match)
+        thread = self.chat_thread(match)
+        latest = thread[-3:]
+        header = tk.Frame(self.chat_preview_body, bg=PANEL_DARK)
+        header.pack(fill="x", padx=8, pady=(8, 6))
+        tk.Label(header, text=f"{match['home']} vs {match['away']}", bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(fill="x")
+        tk.Label(header, text=room, bg=PANEL_DARK, fg=CYAN, font=FONT_SMALL, anchor="w").pack(fill="x")
+        for item in latest:
+            row = tk.Frame(self.chat_preview_body, bg=PANEL_DARK)
+            row.pack(fill="x", padx=8, pady=3)
+            color = ORANGE if item["tag"] == "agent" else GREEN if item["tag"] == "you" else CYAN
+            tk.Label(row, text=item["author"], bg=PANEL_DARK, fg=color, font=FONT_SMALL, width=10, anchor="w").pack(side="left")
+            tk.Label(
+                row,
+                text=item["text"][:54] + ("..." if len(item["text"]) > 54 else ""),
+                bg=PANEL_DARK,
+                fg=MUTED,
+                font=FONT_SMALL,
+                anchor="w",
+                justify="left",
+            ).pack(side="left", fill="x", expand=True)
+        tk.Label(
+            self.chat_preview_body,
+            text="Open the Chat tab for the full room and posting controls.",
+            bg=PANEL_DARK,
+            fg=MUTED,
+            font=FONT_SMALL,
+            anchor="w",
+            padx=8,
+            pady=6,
+        ).pack(fill="x")
+
     def post_chat_message(self, match):
         text = self.chat_message.get().strip()
         if not text:
             self.tracker_status.config(text="Type a message for this match thread first.", fg=MUTED)
             return
         thread = self.chat_thread(match)
-        thread.append({"author": "You", "tag": "you", "time": "now", "text": text})
+        thread.append({"author": "You", "tag": "you", "time": self.chat_time_label(match), "text": text})
         thread.append(self.agent_chat_reply(match, text))
         self.chat_message.set("")
         self.tracker_status.config(text=f"Posted into {match['home']} vs {match['away']} chat.", fg=GREEN)
+        self.render_chat_preview()
         if self.tab_name.get() == "Chat":
             self.render_tab()
 
@@ -2194,6 +2317,7 @@ class SoccerEdgeApp:
         thread = self.chat_thread(match)
         thread.append(self.agent_chat_reply(match, "agent note"))
         self.tracker_status.config(text=f"Agent note added to {match['home']} vs {match['away']} chat.", fg=CYAN)
+        self.render_chat_preview()
         if self.tab_name.get() == "Chat":
             self.render_tab()
 
@@ -2208,7 +2332,7 @@ class SoccerEdgeApp:
             text = f"EdgeAgent: lineup shape at {minute:02d}' is live in the Line-ups tab now, and sub rings highlight the changes."
         else:
             text = f"EdgeAgent: room note for {match['home']} vs {match['away']} at {minute:02d}' - keep the debate tied to replay minute, market move, and whether the pressure is translating into real edge."
-        return {"author": "EdgeAgent", "tag": "agent", "time": "now", "text": text}
+        return {"author": "EdgeAgent", "tag": "agent", "time": self.chat_time_label(match), "text": text}
 
     def mini_bar(self, parent, value, color):
         bar = tk.Frame(parent, bg="#334155", height=8)
