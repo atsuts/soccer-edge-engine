@@ -1149,8 +1149,8 @@ class SoccerEdgeApp:
             for value, width, color in values:
                 label = tk.Label(row, text=value, bg=row_bg, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w")
                 label.pack(side="left", pady=4)
-                label.bind("<Double-Button-1>", lambda _event, book_name=book: self.open_odds_detail(book_name))
-            row.bind("<Double-Button-1>", lambda _event, book_name=book: self.open_odds_detail(book_name))
+                label.bind("<Button-1>", lambda _event, book_name=book: self.open_odds_detail(book_name))
+            row.bind("<Button-1>", lambda _event, book_name=book: self.open_odds_detail(book_name))
 
         footer = tk.Frame(self.odds_body, bg=PANEL)
         footer.pack(fill="x", padx=6, pady=(5, 4))
@@ -1165,7 +1165,7 @@ class SoccerEdgeApp:
         ).pack(fill="x")
         tk.Label(
             self.odds_body,
-            text="Double-click a bookmaker row for full market detail.",
+            text="Click a bookmaker row for full market detail. Use the top button to return.",
             bg=PANEL,
             fg=MUTED,
             font=FONT_SMALL,
@@ -1192,8 +1192,8 @@ class SoccerEdgeApp:
             for value, width, color in values:
                 label = tk.Label(row, text=value, bg=ROW, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w")
                 label.pack(side="left", pady=4)
-                label.bind("<Double-Button-1>", lambda _event, source_name=source: self.open_prediction_detail(source_name))
-            row.bind("<Double-Button-1>", lambda _event, source_name=source: self.open_prediction_detail(source_name))
+                label.bind("<Button-1>", lambda _event, source_name=source: self.open_prediction_detail(source_name))
+            row.bind("<Button-1>", lambda _event, source_name=source: self.open_prediction_detail(source_name))
 
         consensus = self.consensus_prediction(match)
         summary = self.info_card(self.predictions_body)
@@ -1210,7 +1210,7 @@ class SoccerEdgeApp:
         ).pack(fill="x")
         tk.Label(
             self.predictions_body,
-            text="Double-click a prediction source row for full source detail.",
+            text="Click a prediction source row for full source detail. Use the top button to return.",
             bg=PANEL,
             fg=MUTED,
             font=FONT_SMALL,
