@@ -423,6 +423,7 @@ class SoccerEdgeApp:
         self.predictions_body = None
         self.selected_odds_book = None
         self.selected_prediction_source = None
+        self.selected_player_detail = None
         self.recommendation_body = None
         self.quality_body = None
         self.source_body = None
@@ -980,6 +981,7 @@ class SoccerEdgeApp:
         self.current_match = match
         self.selected_odds_book = None
         self.selected_prediction_source = None
+        self.selected_player_detail = None
         self.score_labels["home_badge"].config(text=self.team_initials(match["home"]))
         self.score_labels["away_badge"].config(text=self.team_initials(match["away"]))
         self.score_labels["home"].config(text=match["home"])
@@ -1100,7 +1102,6 @@ class SoccerEdgeApp:
     def draw_timeline_markers(self, canvas, match, max_minute):
         canvas.delete("all")
         width = max(canvas.winfo_width(), 10)
-        height = max(canvas.winfo_height(), 26)
         left_pad = 6
         right_pad = 6
         line_y = 11
@@ -1109,12 +1110,26 @@ class SoccerEdgeApp:
         events = self.timeline_events(match, max_minute)
         for event in events:
             x = left_pad + ((width - left_pad - right_pad) * event["minute"] / max(max_minute, 1))
-            color = ORANGE if event["event"] == "GOAL" else YELLOW if event["event"] == "CARD" else CYAN
+            color = self.event_color(event["event"])
             canvas.create_line(x, 4, x, 18, fill=color, width=2)
             canvas.create_oval(x - 3, line_y - 3, x + 3, line_y + 3, fill=color, outline=color)
             canvas.create_text(x, 23, text=event["minute_text"], fill=MUTED, font=FONT_SMALL)
 
-    def render_player_panels(self, parent, left_title, left_rows, right_title, right_rows, accent):
+    def event_color(self, event_name):
+        color_map = {
+            "GOAL": ORANGE,
+            "CARD": YELLOW,
+            "SUB": CYAN,
+            "SHOT": CYAN,
+            "SAVE": CYAN,
+            "PRESS": GREEN,
+            "VAR": PURPLE,
+            "PEN": RED,
+            "SCORE": MUTED,
+        }
+        return color_map.get(event_name, CYAN)
+
+    def render_player_panels(self, parent, context, left_title, left_rows, right_title, right_rows, accent):
         wrap = tk.Frame(parent, bg=PANEL)
         wrap.pack(fill="x", pady=(0, 6))
         left = self.info_card(wrap)
@@ -1125,24 +1140,100 @@ class SoccerEdgeApp:
         right.grid(in_=wrap, row=0, column=1, sticky="nsew", padx=(4, 0))
         wrap.grid_columnconfigure(0, weight=1)
         wrap.grid_columnconfigure(1, weight=1)
-        self.render_player_panel(left, left_title, left_rows, accent)
-        self.render_player_panel(right, right_title, right_rows, accent)
+        self.render_player_panel(left, context, left_title, left_rows, accent)
+        self.render_player_panel(right, context, right_title, right_rows, accent)
+        self.render_selected_player_detail(parent, context)
 
-    def render_player_panel(self, parent, title, rows, accent):
+    def render_player_panel(self, parent, context, title, rows, accent):
         header = tk.Frame(parent, bg=PANEL_DARK)
         header.pack(fill="x", padx=10, pady=(8, 4))
         tk.Label(header, text=title, bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(side="left")
         tk.Frame(header, bg=accent, width=26, height=4).pack(side="right", pady=6)
 
-        for name, stat_line in rows:
+        for detail in rows:
+            name = detail["name"]
+            stat_line = detail["summary"]
             row = tk.Frame(parent, bg=PANEL_DARK)
             row.pack(fill="x", padx=10, pady=3)
             badge = tk.Label(row, text=self.team_initials(name)[:2], bg="#243244", fg=TEXT, font=FONT_MONO_SMALL, width=4, pady=4)
             badge.pack(side="left")
             text_wrap = tk.Frame(row, bg=PANEL_DARK)
             text_wrap.pack(side="left", fill="x", expand=True, padx=(8, 0))
-            tk.Label(text_wrap, text=name, bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, anchor="w").pack(fill="x")
-            tk.Label(text_wrap, text=stat_line, bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(fill="x")
+            name_label = tk.Label(text_wrap, text=name, bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, anchor="w", cursor="hand2")
+            name_label.pack(fill="x")
+            stat_label = tk.Label(text_wrap, text=stat_line, bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w", cursor="hand2")
+            stat_label.pack(fill="x")
+            arrow = tk.Label(row, text=">", bg=PANEL_DARK, fg=accent, font=FONT_BOLD, width=2, cursor="hand2")
+            arrow.pack(side="right")
+            for widget in (row, badge, text_wrap, name_label, stat_label, arrow):
+                widget.bind(
+                    "<Button-1>",
+                    lambda _event, payload=detail, section=context: self.open_player_detail(section, payload),
+                )
+
+    def render_selected_player_detail(self, parent, context):
+        detail = self.selected_player_detail
+        if not detail or detail["context"] != context:
+            hint = tk.Label(
+                parent,
+                text="Click a player row to open a deeper performance card.",
+                bg=PANEL,
+                fg=MUTED,
+                font=FONT_SMALL,
+                anchor="w",
+            )
+            hint.pack(fill="x", pady=(0, 6))
+            return
+
+        card = self.info_card(parent)
+        top = tk.Frame(card, bg=PANEL_DARK)
+        top.pack(fill="x", padx=10, pady=(8, 4))
+        tk.Label(top, text=f"{detail['name']}  |  {detail['team']}", bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(side="left")
+        tk.Button(
+            top,
+            text="Close",
+            bg="#243244",
+            fg=TEXT,
+            activebackground="#334155",
+            activeforeground=TEXT,
+            relief="flat",
+            font=FONT_SMALL,
+            command=self.close_player_detail,
+        ).pack(side="right")
+
+        tk.Label(
+            card,
+            text=detail["headline"],
+            bg=PANEL_DARK,
+            fg=MUTED,
+            font=FONT_SMALL,
+            anchor="w",
+            padx=10,
+            pady=2,
+        ).pack(fill="x")
+
+        metrics = tk.Frame(card, bg=PANEL_DARK)
+        metrics.pack(fill="x", padx=10, pady=(4, 8))
+        for idx, (label, value) in enumerate(detail["metrics"]):
+            box = tk.Frame(metrics, bg="#243244")
+            box.grid(row=0, column=idx, sticky="ew", padx=3)
+            metrics.grid_columnconfigure(idx, weight=1)
+            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
+            tk.Label(box, text=value, bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 6))
+
+        notes = tk.Frame(card, bg=PANEL_DARK)
+        notes.pack(fill="x", padx=10, pady=(0, 10))
+        tk.Label(notes, text="Why it matters", bg=PANEL_DARK, fg=CYAN, font=FONT_BOLD, anchor="w").pack(fill="x", pady=(0, 4))
+        for line in detail["notes"]:
+            tk.Label(notes, text=f"+ {line}", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", pady=1)
+
+    def open_player_detail(self, context, payload):
+        self.selected_player_detail = {"context": context, **payload}
+        self.render_tab()
+
+    def close_player_detail(self):
+        self.selected_player_detail = None
+        self.render_tab()
 
     def render_info_rows(self, parent, rows):
         for label, home, away in rows:
@@ -1522,6 +1613,8 @@ class SoccerEdgeApp:
 
         stats_frame = tk.Frame(parent, bg=PANEL)
         stats_frame.pack(fill="x")
+        events_frame = self.info_card(parent)
+        events_frame.pack(fill="x", pady=(8, 4))
 
         def refresh_stats(value):
             minute = int(float(value))
@@ -1532,6 +1625,7 @@ class SoccerEdgeApp:
             self.clear(stats_frame)
             for label, home, away in self.match_stats_at_minute(match, minute, max_minute):
                 self.stat_bar(stats_frame, label, home, away)
+            self.render_replay_events(events_frame, match, minute, max_minute)
 
         slider.configure(command=refresh_stats)
         self.draw_timeline_markers(markers, match, max_minute)
@@ -1555,6 +1649,7 @@ class SoccerEdgeApp:
         self.section_title(parent, "ATTACK LEADERS")
         self.render_player_panels(
             parent,
+            "attack",
             match["home"],
             self.attack_players(match, match["home"], minute, max_minute),
             match["away"],
@@ -1591,12 +1686,58 @@ class SoccerEdgeApp:
         self.section_title(parent, "DEFENSIVE LEADERS")
         self.render_player_panels(
             parent,
+            "defense",
             match["home"],
             self.defense_players(match, match["home"], minute, max_minute),
             match["away"],
             self.defense_players(match, match["away"], minute, max_minute),
             CYAN,
         )
+
+    def render_replay_events(self, parent, match, minute, max_minute):
+        self.clear(parent)
+        self.section_title(parent, "KEY MOMENTS TO THIS MINUTE")
+        shown = [event for event in self.timeline_events(match, max_minute) if event["minute"] <= minute]
+        if not shown:
+            tk.Label(
+                parent,
+                text="No tracked moments yet at this point in the replay.",
+                bg=PANEL_DARK,
+                fg=MUTED,
+                font=FONT_SMALL,
+                anchor="w",
+                padx=10,
+                pady=10,
+            ).pack(fill="x")
+            return
+
+        for event in shown[-5:]:
+            row = tk.Frame(parent, bg=PANEL_DARK)
+            row.pack(fill="x", padx=10, pady=3)
+            pill = tk.Label(
+                row,
+                text=event["minute_text"],
+                bg="#243244",
+                fg=TEXT,
+                font=FONT_MONO_SMALL,
+                width=6,
+                pady=4,
+            )
+            pill.pack(side="left")
+            event_tag = tk.Label(
+                row,
+                text=event["event"],
+                bg=PANEL_DARK,
+                fg=self.event_color(event["event"]),
+                font=FONT_BOLD,
+                width=8,
+                anchor="w",
+            )
+            event_tag.pack(side="left", padx=(8, 10))
+            team = tk.Label(row, text=event["team"], bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, width=16, anchor="w")
+            team.pack(side="left")
+            detail = tk.Label(row, text=event["detail"], bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w")
+            detail.pack(side="left", fill="x", expand=True)
 
     def render_lineups_tab(self, parent, match):
         self.section_title(parent, f"{match['home'].upper()}  4-3-3")
@@ -1698,15 +1839,26 @@ class SoccerEdgeApp:
     def match_events(self, match):
         if match["status"] == "LIVE":
             return [
-                ("24'", match["home"], "CARD", "Tactical foul in midfield"),
-                ("41'", match["away"], "GOAL", f"{match['away']} takes the lead"),
-                ("HT", "", "SCORE", f"{match['home_score']} - {match['away_score']}"),
-                (f"{match['minute']}'", match["home"], "PRESS", "Home side pushing higher"),
+                ("09'", match["home"], "SHOT", "Early low shot forced a near-post save"),
+                ("24'", match["home"], "CARD", "Tactical foul stopped a transition"),
+                ("33'", match["away"], "SAVE", "Keeper denied a close-range finish"),
+                ("41'", match["away"], "GOAL", f"{match['away']} took the lead after a quick break"),
+                ("HT", "Match", "SCORE", f"{match['home_score']} - {match['away_score']} at the break"),
+                ("58'", match["home"], "SUB", "Fresh winger introduced to raise tempo"),
+                ("63'", match["away"], "VAR", "Penalty shout checked and waved away"),
+                (f"{match['minute']}'", match["home"], "PRESS", "Home side pushing higher and winning second balls"),
+            ]
+        if match["minute"] == 0:
+            return [
+                ("00'", "Match", "INFO", "Pre-match view: replay will fill once live or historical event data is loaded"),
             ]
         return [
-            ("12'", match["home"], "SHOT", "Early chance saved"),
-            ("37'", match["away"], "SHOT", "Counter attack wide"),
-            ("FT", "", "SCORE", f"{match['home_score']} - {match['away_score']}"),
+            ("12'", match["home"], "SHOT", "Early chance saved low to the keeper's left"),
+            ("27'", match["away"], "GOAL", "Back-post finish after a diagonal switch"),
+            ("49'", match["home"], "SUB", "Midfield change to control the center"),
+            ("68'", match["away"], "CARD", "Late challenge in transition"),
+            ("74'", match["home"], "PRESS", "Sustained spell pinned the away side deep"),
+            ("FT", "Match", "SCORE", f"{match['home_score']} - {match['away_score']} full-time"),
         ]
 
     def timeline_events(self, match, max_minute):
@@ -1895,7 +2047,26 @@ class SoccerEdgeApp:
             xg = round(xg_base[idx] * (0.45 + ratio * 0.75), 2)
             shots = max(1, int(round(action_base[idx] * (0.4 + ratio * 0.8))))
             key_passes = max(0, int(round((action_base[idx] - 1) * (0.3 + ratio * 0.7))))
-            rows.append((name, f"xG {xg}  |  shots {shots}  |  key passes {key_passes}"))
+            touches_box = max(1, int(round(shots + key_passes + ratio * 3 + idx)))
+            rows.append(
+                {
+                    "name": name,
+                    "team": team,
+                    "summary": f"xG {xg}  |  shots {shots}  |  key passes {key_passes}",
+                    "headline": f"{name} is one of the main attacking drivers for {team} at this point in the match.",
+                    "metrics": [
+                        ("xG", f"{xg:.2f}"),
+                        ("Shots", str(shots)),
+                        ("Key Passes", str(key_passes)),
+                        ("Box Touches", str(touches_box)),
+                    ],
+                    "notes": [
+                        f"Shot volume is building as the match moves toward {minute:02d}'.",
+                        "Most value is coming from central combinations and second-ball attacks.",
+                        "Useful for comparing player-level threat against the team totals above.",
+                    ],
+                }
+            )
         return rows
 
     def control_stats(self, match, minute, max_minute):
@@ -1996,7 +2167,25 @@ class SoccerEdgeApp:
             tackles = max(1, int(round(tackle_base[idx] * (0.35 + ratio * 0.85))))
             duels = max(1, int(round(duel_base[idx] * (0.4 + ratio * 0.8))))
             recoveries = max(1, int(round((duel_base[idx] + 2) * (0.4 + ratio * 0.9))))
-            rows.append((name, f"tackles {tackles}  |  duels {duels}  |  recoveries {recoveries}"))
+            rows.append(
+                {
+                    "name": name,
+                    "team": team,
+                    "summary": f"tackles {tackles}  |  duels {duels}  |  recoveries {recoveries}",
+                    "headline": f"{name} is carrying a big share of the defensive work for {team}.",
+                    "metrics": [
+                        ("Tackles", str(tackles)),
+                        ("Duels", str(duels)),
+                        ("Recoveries", str(recoveries)),
+                        ("Def Actions", str(tackles + duels + recoveries)),
+                    ],
+                    "notes": [
+                        "Good for spotting whether the defense is proactive or just absorbing pressure.",
+                        "Higher recovery volume often lines up with field tilt and transition stress.",
+                        f"This snapshot reflects the replay state at {minute:02d}'.",
+                    ],
+                }
+            )
         return rows
 
     def percentage_split(self, left, right):
