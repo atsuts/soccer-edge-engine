@@ -1066,6 +1066,8 @@ class SoccerEdgeApp:
     def select_match(self, match, refresh=True):
         self.stop_replay(reset_to_current=False)
         self.current_match = match
+        if self.match_finished(match):
+            self.settle_match_challenges(match)
         self.selected_odds_book = None
         self.selected_prediction_source = None
         self.selected_player_detail = None
@@ -1094,6 +1096,7 @@ class SoccerEdgeApp:
         self.render_chat_preview()
         self.render_source_monitor()
         self.render_market_sections()
+        self.render_accuracy()
         if refresh:
             self.render_matches()
 
@@ -2046,9 +2049,11 @@ class SoccerEdgeApp:
         rooms.pack(fill="x", pady=(0, 6))
         for text in self.chat_rooms():
             active = text == active_room
+            count = self.chat_room_count(match, text)
+            badge = self.chat_room_badge(match, text)
             btn = tk.Button(
                 rooms,
-                text=text,
+                text=f"{text} {count} {badge}".strip(),
                 bg=TEXT if active else PANEL_DARK,
                 fg=BG if active else MUTED,
                 activebackground=TEXT if active else "#243244",
@@ -2160,6 +2165,23 @@ class SoccerEdgeApp:
 
     def chat_rooms(self):
         return ["Open Room", "Value Talk", "Live Pulse", "Post-match"]
+
+    def chat_room_count(self, match, room_name):
+        rooms = self.match_chats.get(match["id"])
+        if not isinstance(rooms, dict):
+            rooms = self.seed_chat_rooms(match)
+            self.match_chats[match["id"]] = rooms
+        return len(rooms.get(room_name, []))
+
+    def chat_room_badge(self, match, room_name):
+        count = self.chat_room_count(match, room_name)
+        if room_name == "Live Pulse" and match["status"] == "LIVE":
+            return "LIVE"
+        if count >= 5:
+            return "HOT"
+        if room_name == "Post-match" and self.match_finished(match):
+            return "FT"
+        return ""
 
     def active_chat_room(self, match):
         if match["id"] not in self.match_chat_room:
@@ -2376,9 +2398,25 @@ class SoccerEdgeApp:
     def render_profile_board(self, parent):
         card = self.info_card(parent)
         card.pack(fill="x", pady=(0, 6))
+        highlight = tk.Frame(card, bg=PANEL_DARK)
+        highlight.pack(fill="x", padx=10, pady=(8, 8))
+        featured = [
+            self.profile_lookup("Edge Platform"),
+            self.top_guest_profile(),
+            self.profile_lookup(self.guest_handle.get().strip() or "Guest001"),
+        ]
+        labels = ["Platform", "Top Guest", "Your Handle"]
+        for idx, profile in enumerate(featured):
+            box = tk.Frame(highlight, bg="#243244")
+            box.pack(side="left", expand=True, fill="x", padx=3)
+            tk.Label(box, text=labels[idx], bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
+            tk.Label(box, text=profile["name"], bg="#243244", fg=ORANGE if profile["tag"] == "platform" else GREEN if profile["tag"] == "you" else TEXT, font=FONT_BOLD).pack()
+            tk.Label(box, text=f"{profile['badge']}  |  streak {profile['streak']}", bg="#243244", fg=CYAN, font=FONT_SMALL).pack(pady=(2, 2))
+            tk.Label(box, text=f"hit {profile['hit_rate']}%  |  open {profile['open']}", bg="#243244", fg=TEXT, font=FONT_SMALL).pack(pady=(0, 6))
+
         header = tk.Frame(card, bg=PANEL_DARK)
         header.pack(fill="x", padx=10, pady=(8, 4))
-        for text, width in [("USER", 14), ("W-L-P", 10), ("HIT", 8), ("OPEN", 8), ("BEST", 14)]:
+        for text, width in [("USER", 14), ("W-L-P", 10), ("HIT", 8), ("OPEN", 8), ("BEST", 14), ("BADGE", 10)]:
             tk.Label(header, text=text, bg=PANEL_DARK, fg=ORANGE, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
 
         for row in self.profile_rows()[:6]:
@@ -2391,6 +2429,7 @@ class SoccerEdgeApp:
                 (f"{row['hit_rate']}%", 8, GREEN),
                 (str(row["open"]), 8, MUTED),
                 (row["best_market"], 14, CYAN),
+                (row["badge"], 10, ORANGE if row["badge"] == "Crown" else CYAN if row["badge"] == "Hot" else MUTED),
             ]
             for value, width, color in values:
                 tk.Label(line, text=value, bg=line.cget("bg"), fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left", pady=4)
@@ -2583,8 +2622,9 @@ class SoccerEdgeApp:
         for item in self.challenge_history:
             row = buckets.setdefault(
                 item["name"],
-                {"name": item["name"], "tag": item["tag"], "wins": 0, "losses": 0, "pushes": 0, "open": 0, "best_market": item["market"]},
+                {"name": item["name"], "tag": item["tag"], "wins": 0, "losses": 0, "pushes": 0, "open": 0, "best_market": item["market"], "history": []},
             )
+            row["history"].append(item["result"])
             if item["status"] == "Settled":
                 if item["result"] == "W":
                     row["wins"] += 1
@@ -2600,6 +2640,8 @@ class SoccerEdgeApp:
             settled = row["wins"] + row["losses"] + row["pushes"]
             hit_rate = 0 if settled == 0 else int(round((row["wins"] / max(1, settled)) * 100))
             row["hit_rate"] = hit_rate
+            row["streak"] = self.profile_streak(row["history"])
+            row["badge"] = self.profile_badge(row)
             rows.append(row)
         return sorted(rows, key=lambda item: (item["hit_rate"], item["wins"]), reverse=True)
 
@@ -2607,7 +2649,37 @@ class SoccerEdgeApp:
         for row in self.profile_rows():
             if row["name"] == name:
                 return row
-        return {"name": name, "tag": "guest", "wins": 0, "losses": 0, "pushes": 0, "open": 0, "best_market": "1X2", "hit_rate": 0}
+        return {"name": name, "tag": "guest", "wins": 0, "losses": 0, "pushes": 0, "open": 0, "best_market": "1X2", "hit_rate": 0, "streak": "0", "badge": "New"}
+
+    def top_guest_profile(self):
+        guests = [row for row in self.profile_rows() if row["tag"] != "platform"]
+        return guests[0] if guests else self.profile_lookup("Guest001")
+
+    def profile_streak(self, history):
+        streak_type = None
+        streak_count = 0
+        for result in reversed(history):
+            if result not in ("W", "L"):
+                continue
+            if streak_type is None:
+                streak_type = result
+                streak_count = 1
+            elif result == streak_type:
+                streak_count += 1
+            else:
+                break
+        if streak_type is None:
+            return "0"
+        return f"{streak_type}{streak_count}"
+
+    def profile_badge(self, row):
+        if row["tag"] == "platform":
+            return "Crown"
+        if row["streak"].startswith("W") and int(row["streak"][1:] or "0") >= 2:
+            return "Hot"
+        if row["open"] >= 2:
+            return "Active"
+        return "New"
 
     def platform_vs_community_summary(self):
         platform = {"wins": 0, "losses": 0, "pushes": 0, "open": 0}
@@ -2642,6 +2714,21 @@ class SoccerEdgeApp:
             "open": platform["open"] + community["open"],
             "winner": winner,
         }
+
+    def match_finished(self, match):
+        return match.get("status") in ("FT", "FINISHED") or match.get("minute", 0) >= 90 and match.get("status") != "UP"
+
+    def settle_match_challenges(self, match):
+        changed = False
+        for item in self.challenge_history:
+            if item["match_id"] != match["id"] or item["status"] == "Settled":
+                continue
+            item["home_score"] = match["home_score"]
+            item["away_score"] = match["away_score"]
+            item["result"] = self.settle_pick(item["market"], item["pick"], match["home_score"], match["away_score"])
+            item["status"] = "Settled"
+            changed = True
+        return changed
 
     def render_chat_preview(self):
         if self.chat_preview_body is None:
@@ -3852,8 +3939,17 @@ class SoccerEdgeApp:
             return
         if self.current_match["status"] == "LIVE" and self.current_match["minute"] < 90:
             self.current_match["minute"] += 1
+            if self.current_match["minute"] >= 90:
+                self.current_match["minute"] = 90
+                self.current_match["status"] = "FT"
+                self.tracker_running = False
+                self.settle_match_challenges(self.current_match)
+                self.tracker_status.config(text="Match finished. Challenge picks settled.", fg=GREEN)
             self.select_match(self.current_match)
-        self.tracker_job = self.root.after(5000, self.tracker_tick)
+        if self.tracker_running:
+            self.tracker_job = self.root.after(5000, self.tracker_tick)
+        else:
+            self.tracker_job = None
 
     def stop_tracker(self):
         self.tracker_running = False
