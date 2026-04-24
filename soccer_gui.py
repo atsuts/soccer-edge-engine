@@ -434,8 +434,12 @@ class SoccerEdgeApp:
         self.replay_max_minute = 0
         self.quick_query = tk.StringVar(value="")
         self.chat_message = tk.StringVar(value="")
+        self.guest_handle = tk.StringVar(value="Guest001")
+        self.guest_market = tk.StringVar(value="1X2")
+        self.guest_pick = tk.StringVar(value="")
         self.match_chats = {}
         self.match_chat_room = {}
+        self.match_challenges = {}
         self.center_split = None
         self.center_split_initialized = False
         self.recommendation_body = None
@@ -2055,6 +2059,9 @@ class SoccerEdgeApp:
             )
             btn.pack(side="left", padx=(0, 8))
 
+        self.section_title(parent, "PREDICTION CHALLENGE")
+        self.render_prediction_challenge(parent, match)
+
         feed = self.info_card(parent)
         feed.pack(fill="both", expand=True, pady=(0, 6))
         chat_canvas = tk.Canvas(feed, bg=PANEL_DARK, height=360, highlightthickness=0)
@@ -2256,11 +2263,194 @@ class SoccerEdgeApp:
         ).pack(fill="x", pady=(2, 0))
         tk.Frame(bubble, bg="#243244", height=1).pack(fill="x", pady=(8, 0))
 
+    def render_prediction_challenge(self, parent, match):
+        board = self.info_card(parent)
+        board.pack(fill="x", pady=(0, 6))
+        entries = self.challenge_entries(match)
+        leader = entries[0]
+
+        top = tk.Frame(board, bg=PANEL_DARK)
+        top.pack(fill="x", padx=10, pady=(8, 6))
+        tk.Label(top, text="Beat The Platform", bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(side="left")
+        tk.Label(top, text=f"Leader: {leader['name']}  |  {leader['accuracy']}%", bg=PANEL_DARK, fg=ORANGE, font=FONT_SMALL, anchor="e").pack(side="right")
+
+        score_row = tk.Frame(board, bg=PANEL_DARK)
+        score_row.pack(fill="x", padx=10, pady=(0, 8))
+        platform = self.platform_challenge_entry(match)
+        for label, value in [
+            ("Platform", f"{platform['pick']}  {platform['confidence']}%"),
+            ("Guests", str(len([row for row in entries if row["tag"] != "platform"]))),
+            ("Market", self.guest_market.get()),
+        ]:
+            cell = tk.Frame(score_row, bg="#243244")
+            cell.pack(side="left", expand=True, fill="x", padx=3)
+            tk.Label(cell, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(5, 2))
+            tk.Label(cell, text=value, bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 6))
+
+        form = tk.Frame(board, bg=PANEL_DARK)
+        form.pack(fill="x", padx=10, pady=(0, 8))
+        tk.Label(form, text="Handle", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL).pack(side="left")
+        entry = tk.Entry(
+            form,
+            textvariable=self.guest_handle,
+            bg="#0f172a",
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+            font=FONT_SMALL,
+            width=14,
+        )
+        entry.pack(side="left", padx=(6, 10), ipady=5)
+
+        market_frame = tk.Frame(form, bg=PANEL_DARK)
+        market_frame.pack(side="left", padx=(0, 10))
+        for market in ("1X2", "O/U 2.5", "BTTS"):
+            active = self.guest_market.get() == market
+            tk.Button(
+                market_frame,
+                text=market,
+                bg=TEXT if active else "#243244",
+                fg=BG if active else MUTED,
+                activebackground=TEXT if active else "#334155",
+                activeforeground=BG if active else TEXT,
+                relief="flat",
+                font=FONT_SMALL,
+                padx=10,
+                pady=5,
+                command=lambda value=market, current=match: self.set_guest_market(value, current),
+            ).pack(side="left", padx=3)
+
+        pick_frame = tk.Frame(board, bg=PANEL_DARK)
+        pick_frame.pack(fill="x", padx=10, pady=(0, 8))
+        for option in self.challenge_pick_options(match):
+            active = self.guest_pick.get() == option
+            tk.Button(
+                pick_frame,
+                text=option,
+                bg=ORANGE if active else "#243244",
+                fg=TEXT if active else MUTED,
+                activebackground=ORANGE,
+                activeforeground=TEXT,
+                relief="flat",
+                font=FONT_SMALL,
+                padx=12,
+                pady=6,
+                command=lambda value=option: self.guest_pick.set(value),
+            ).pack(side="left", padx=(0, 6))
+        self.button(
+            pick_frame,
+            "Submit Pick",
+            CYAN_DARK,
+            lambda current=match: self.submit_guest_prediction(current),
+            width=12,
+            pady=7,
+        ).pack(side="right")
+
+        header = tk.Frame(board, bg=PANEL_DARK)
+        header.pack(fill="x", padx=10, pady=(0, 2))
+        for text, width in [("#", 4), ("NAME", 14), ("MARKET", 12), ("PICK", 14), ("CONF", 8), ("ACC", 8)]:
+            tk.Label(header, text=text, bg=PANEL_DARK, fg=ORANGE, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
+
+        for idx, row in enumerate(entries[:6], start=1):
+            line = tk.Frame(board, bg=ROW if row["tag"] != "platform" else ROW_ALT)
+            line.pack(fill="x", padx=10, pady=1)
+            name_color = ORANGE if row["tag"] == "platform" else GREEN if row["tag"] == "you" else TEXT
+            for value, width, color in [
+                (str(idx), 4, MUTED),
+                (row["name"], 14, name_color),
+                (row["market"], 12, CYAN),
+                (row["pick"], 14, TEXT),
+                (f"{row['confidence']}%", 8, ORANGE),
+                (f"{row['accuracy']}%", 8, GREEN),
+            ]:
+                tk.Label(line, text=value, bg=line.cget("bg"), fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left", pady=4)
+
     def chat_time_label(self, match):
         minute = self.current_replay_minute(match)
         if match["status"] == "UP" and minute == 0:
             return "Pre | now"
         return f"{minute:02d}' | now"
+
+    def challenge_entries(self, match):
+        if match["id"] not in self.match_challenges:
+            self.match_challenges[match["id"]] = self.seed_challenge_entries(match)
+        rows = [self.platform_challenge_entry(match)] + self.match_challenges[match["id"]]
+        return sorted(rows, key=lambda item: (item["accuracy"], item["confidence"]), reverse=True)
+
+    def seed_challenge_entries(self, match):
+        return [
+            {"name": "SharpTom", "tag": "guest", "market": "1X2", "pick": match["away"], "confidence": 58, "accuracy": 67},
+            {"name": "OddsMuse", "tag": "guest", "market": "O/U 2.5", "pick": "Under 2.5", "confidence": 54, "accuracy": 63},
+            {"name": "PulseRita", "tag": "guest", "market": "BTTS", "pick": "Yes", "confidence": 61, "accuracy": 65},
+        ]
+
+    def platform_challenge_entry(self, match):
+        snapshot = self.analysis_snapshot(match)
+        return {
+            "name": "Edge Platform",
+            "tag": "platform",
+            "market": "1X2",
+            "pick": snapshot["market"].split("|")[-1].replace("pick", "").strip(),
+            "confidence": snapshot["confidence"],
+            "accuracy": 74,
+        }
+
+    def set_guest_market(self, value, match):
+        self.guest_market.set(value)
+        options = self.challenge_pick_options(match)
+        if self.guest_pick.get() not in options:
+            self.guest_pick.set(options[0])
+        if self.tab_name.get() == "Chat":
+            self.render_tab()
+
+    def challenge_pick_options(self, match):
+        market = self.guest_market.get()
+        if market == "O/U 2.5":
+            return ["Over 2.5", "Under 2.5"]
+        if market == "BTTS":
+            return ["Yes", "No"]
+        return [match["home"], "Draw", match["away"]]
+
+    def submit_guest_prediction(self, match):
+        handle = self.guest_handle.get().strip() or "Guest001"
+        pick = self.guest_pick.get().strip()
+        if not pick:
+            options = self.challenge_pick_options(match)
+            pick = options[0]
+            self.guest_pick.set(pick)
+        rows = self.match_challenges.setdefault(match["id"], self.seed_challenge_entries(match))
+        confidence = self.challenge_confidence(match, pick)
+        accuracy = max(51, min(79, confidence + 8 - (match["id"] % 4)))
+        rows.append(
+            {
+                "name": handle,
+                "tag": "you",
+                "market": self.guest_market.get(),
+                "pick": pick,
+                "confidence": confidence,
+                "accuracy": accuracy,
+            }
+        )
+        self.tracker_status.config(text=f"{handle} joined the challenge on {match['home']} vs {match['away']}.", fg=GREEN)
+        self.render_chat_preview()
+        if self.tab_name.get() == "Chat":
+            self.render_tab()
+
+    def challenge_confidence(self, match, pick):
+        consensus = self.consensus_prediction(match)
+        if pick == match["home"]:
+            return consensus["home"]
+        if pick == match["away"]:
+            return consensus["away"]
+        if pick == "Draw":
+            return consensus["draw"]
+        if pick == "Over 2.5":
+            return min(78, int(round(match["over_price"])))
+        if pick == "Under 2.5":
+            return min(78, int(round(match["under_price"])))
+        if pick == "Yes":
+            return min(76, int(round((match["home_avg"] + match["away_avg"]) * 18)))
+        return 100 - min(76, int(round((match["home_avg"] + match["away_avg"]) * 18)))
 
     def render_chat_preview(self):
         if self.chat_preview_body is None:
@@ -2270,6 +2460,7 @@ class SoccerEdgeApp:
         room = self.active_chat_room(match)
         thread = self.chat_thread(match)
         latest = thread[-3:]
+        challenge = self.challenge_entries(match)[:3]
         header = tk.Frame(self.chat_preview_body, bg=PANEL_DARK)
         header.pack(fill="x", padx=8, pady=(8, 6))
         tk.Label(header, text=f"{match['home']} vs {match['away']}", bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(fill="x")
@@ -2288,6 +2479,23 @@ class SoccerEdgeApp:
                 anchor="w",
                 justify="left",
             ).pack(side="left", fill="x", expand=True)
+        tk.Label(
+            self.chat_preview_body,
+            text="Challenge",
+            bg=PANEL_DARK,
+            fg=ORANGE,
+            font=FONT_BOLD,
+            anchor="w",
+            padx=8,
+            pady=6,
+        ).pack(fill="x")
+        for idx, item in enumerate(challenge, start=1):
+            row = tk.Frame(self.chat_preview_body, bg=PANEL_DARK)
+            row.pack(fill="x", padx=8, pady=2)
+            tk.Label(row, text=str(idx), bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, width=3, anchor="w").pack(side="left")
+            tk.Label(row, text=item["name"], bg=PANEL_DARK, fg=ORANGE if item["tag"] == "platform" else GREEN if item["tag"] == "you" else TEXT, font=FONT_SMALL, width=14, anchor="w").pack(side="left")
+            tk.Label(row, text=item["pick"], bg=PANEL_DARK, fg=CYAN, font=FONT_SMALL, width=12, anchor="w").pack(side="left")
+            tk.Label(row, text=f"{item['accuracy']}%", bg=PANEL_DARK, fg=GREEN, font=FONT_SMALL, width=7, anchor="e").pack(side="right")
         tk.Label(
             self.chat_preview_body,
             text="Open the Chat tab for the full room and posting controls.",
