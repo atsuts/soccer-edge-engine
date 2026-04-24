@@ -406,7 +406,7 @@ class SoccerEdgeApp:
         self.watchlist_ids = set()
         self.tracker_job = None
         self.tracker_running = False
-        self.tab_name = tk.StringVar(value="Info")
+        self.tab_name = tk.StringVar(value="Overview")
 
         self.filters = {
             "country": tk.StringVar(value="All"),
@@ -760,7 +760,7 @@ class SoccerEdgeApp:
     def build_tabs(self, parent):
         tabs = tk.Frame(parent, bg=PANEL)
         tabs.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
-        for idx, name in enumerate(["Info", "Summary", "Stats", "Line-ups", "Table", "H2H"]):
+        for idx, name in enumerate(self.center_tabs()):
             tabs.grid_columnconfigure(idx, weight=1)
             active = name == self.tab_name.get()
             btn = tk.Button(
@@ -776,6 +776,9 @@ class SoccerEdgeApp:
                 command=lambda value=name: self.set_tab(value),
             )
             btn.grid(row=0, column=idx, sticky="ew")
+
+    def center_tabs(self):
+        return ["Overview", "Replay", "Attack", "Control", "Defense", "Line-ups", "Table", "H2H"]
 
     def rebuild_tabs(self):
         parent = self.tab_content.master
@@ -1022,12 +1025,16 @@ class SoccerEdgeApp:
         match = self.current_match
         body = self.tab_body()
         tab = self.tab_name.get()
-        if tab == "Info":
-            self.render_info_tab(body, match)
-        elif tab == "Summary":
-            self.render_summary_tab(body, match)
-        elif tab == "Stats":
+        if tab == "Overview":
+            self.render_overview_tab(body, match)
+        elif tab == "Replay":
             self.render_stats_tab(body, match)
+        elif tab == "Attack":
+            self.render_attack_tab(body, match)
+        elif tab == "Control":
+            self.render_control_tab(body, match)
+        elif tab == "Defense":
+            self.render_defense_tab(body, match)
         elif tab == "Line-ups":
             self.render_lineups_tab(body, match)
         elif tab == "Table":
@@ -1110,6 +1117,57 @@ class SoccerEdgeApp:
             tk.Label(row, text=label, bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, width=18, anchor="w").pack(side="left")
             self.mini_bar(row, pct, color)
             tk.Label(row, text=f"{pct}%", bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, width=6, anchor="e").pack(side="right")
+
+    def render_overview_tab(self, parent, match):
+        minute = self.stats_reference_minute(match)
+        max_minute = self.stats_max_minute(match)
+
+        self.section_title(parent, "MATCH OVERVIEW")
+        summary = self.info_card(parent)
+        summary_row = tk.Frame(summary, bg=PANEL_DARK)
+        summary_row.pack(fill="x", padx=10, pady=8)
+        for label, home_pct, away_pct in self.stats_summary_percentages(match, minute, max_minute):
+            box = tk.Frame(summary_row, bg="#243244")
+            box.pack(side="left", expand=True, fill="x", padx=3)
+            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
+            tk.Label(
+                box,
+                text=f"{home_pct}% / {away_pct}%",
+                bg="#243244",
+                fg=TEXT,
+                font=FONT_BOLD,
+            ).pack(pady=(0, 6))
+
+        self.section_title(parent, "MATCH DETAILS")
+        details = self.info_card(parent)
+        values = [
+            ("Competition", match["tournament"]),
+            ("Status", match["status"]),
+            ("Venue", match["venue"]),
+            ("Minute", f"{minute:02d}'" if minute else "Pre-match"),
+            ("Referee", match["referee"]),
+            ("League Angle", f"{match['league']} form + market context"),
+        ]
+        for idx, (label, value) in enumerate(values):
+            row = tk.Frame(details, bg=PANEL_DARK)
+            row.grid(row=idx // 2, column=idx % 2, sticky="ew", padx=12, pady=8)
+            details.grid_columnconfigure(idx % 2, weight=1)
+            tk.Label(row, text=label, bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(fill="x")
+            tk.Label(row, text=value, bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(fill="x")
+
+        self.section_title(parent, "MATCH FLOW")
+        for minute_text, team, event, detail in self.match_events(match):
+            row = self.info_card(parent)
+            row.configure(highlightthickness=0)
+            tk.Label(row, text=minute_text, bg=PANEL_DARK, fg=MUTED, font=FONT_MONO_SMALL, width=8, anchor="w").pack(side="left", padx=10, pady=8)
+            tk.Label(row, text=event, bg=PANEL_DARK, fg=ORANGE if event == "GOAL" else YELLOW if event == "CARD" else CYAN, font=FONT_BOLD, width=10).pack(side="left")
+            tk.Label(row, text=team or "Match", bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, width=16, anchor="w").pack(side="left")
+            tk.Label(row, text=detail, bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(side="left", fill="x", expand=True)
+
+        self.section_title(parent, "KEY EDGE SNAPSHOT")
+        highlight_stats = self.match_stats_at_minute(match, minute, max_minute)[:6]
+        for label, home, away in highlight_stats:
+            self.stat_bar(parent, label, home, away)
 
     def render_market_sections(self):
         if self.odds_body is None or self.predictions_body is None:
@@ -1354,7 +1412,7 @@ class SoccerEdgeApp:
         ).pack(fill="x")
 
     def render_stats_tab(self, parent, match):
-        max_minute = max(match["minute"], 1) if match["status"] == "LIVE" else 90
+        max_minute = self.stats_max_minute(match)
 
         self.section_title(parent, "MATCH STATS TIMELINE")
 
@@ -1425,6 +1483,60 @@ class SoccerEdgeApp:
         slider.configure(command=refresh_stats)
         slider.set(min(match["minute"], max_minute))
         refresh_stats(slider.get())
+
+    def render_attack_tab(self, parent, match):
+        minute = self.stats_reference_minute(match)
+        max_minute = self.stats_max_minute(match)
+        self.section_title(parent, "ATTACK PROFILE")
+
+        summary = self.info_card(parent)
+        summary_row = tk.Frame(summary, bg=PANEL_DARK)
+        summary_row.pack(fill="x", padx=10, pady=8)
+        for label, home_pct, away_pct in self.attack_summary_percentages(match, minute, max_minute):
+            box = tk.Frame(summary_row, bg="#243244")
+            box.pack(side="left", expand=True, fill="x", padx=3)
+            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
+            tk.Label(box, text=f"{home_pct}% / {away_pct}%", bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 6))
+
+        self.section_title(parent, "ATTACKING OUTPUT")
+        for label, home, away in self.attack_stats(match, minute, max_minute):
+            self.stat_bar(parent, label, home, away)
+
+    def render_control_tab(self, parent, match):
+        minute = self.stats_reference_minute(match)
+        max_minute = self.stats_max_minute(match)
+        self.section_title(parent, "CONTROL & TERRITORY")
+
+        summary = self.info_card(parent)
+        summary_row = tk.Frame(summary, bg=PANEL_DARK)
+        summary_row.pack(fill="x", padx=10, pady=8)
+        for label, home_pct, away_pct in self.control_summary_percentages(match, minute, max_minute):
+            box = tk.Frame(summary_row, bg="#243244")
+            box.pack(side="left", expand=True, fill="x", padx=3)
+            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
+            tk.Label(box, text=f"{home_pct}% / {away_pct}%", bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 6))
+
+        self.section_title(parent, "CONTROL STATS")
+        for label, home, away in self.control_stats(match, minute, max_minute):
+            self.stat_bar(parent, label, home, away)
+
+    def render_defense_tab(self, parent, match):
+        minute = self.stats_reference_minute(match)
+        max_minute = self.stats_max_minute(match)
+        self.section_title(parent, "DEFENSE & DISCIPLINE")
+
+        summary = self.info_card(parent)
+        summary_row = tk.Frame(summary, bg=PANEL_DARK)
+        summary_row.pack(fill="x", padx=10, pady=8)
+        for label, home_pct, away_pct in self.defense_summary_percentages(match, minute, max_minute):
+            box = tk.Frame(summary_row, bg="#243244")
+            box.pack(side="left", expand=True, fill="x", padx=3)
+            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
+            tk.Label(box, text=f"{home_pct}% / {away_pct}%", bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 6))
+
+        self.section_title(parent, "DEFENSIVE STATS")
+        for label, home, away in self.defense_stats(match, minute, max_minute):
+            self.stat_bar(parent, label, home, away)
 
     def render_lineups_tab(self, parent, match):
         self.section_title(parent, f"{match['home'].upper()}  4-3-3")
@@ -1554,6 +1666,23 @@ class SoccerEdgeApp:
             ("Goalkeeper saves", 2, 4),
         ]
 
+    def stats_max_minute(self, match):
+        return max(match["minute"], 1) if match["status"] == "LIVE" else 90
+
+    def stats_reference_minute(self, match):
+        if match["status"] == "LIVE":
+            return max(match["minute"], 1)
+        if match["status"] == "UP":
+            return 0
+        return 90
+
+    def stat_map(self, match, minute=None, max_minute=None):
+        if max_minute is None:
+            max_minute = self.stats_max_minute(match)
+        if minute is None:
+            minute = self.stats_reference_minute(match)
+        return {label: (home, away) for label, home, away in self.match_stats_at_minute(match, minute, max_minute)}
+
     def match_stats_at_minute(self, match, minute, max_minute=90):
         ratio = 0 if max_minute <= 0 else max(0.0, min(minute / max_minute, 1.0))
         live_bias = ((match["id"] % 5) - 2) / 14
@@ -1620,6 +1749,136 @@ class SoccerEdgeApp:
         if ratio >= 1:
             return 1.0
         return min(1.0, max(0.0, (ratio ** 0.84) * (0.92 + ratio * 0.08)))
+
+    def attack_stats(self, match, minute, max_minute):
+        stats = self.stat_map(match, minute, max_minute)
+        xg_home, xg_away = stats.get("Expected goals (xG)", (0.0, 0.0))
+        on_target_home, on_target_away = stats.get("Shots on target", (0, 0))
+        off_target_home, off_target_away = stats.get("Shots off target", (0, 0))
+        blocked_home, blocked_away = stats.get("Blocked shots", (0, 0))
+        crosses_home, crosses_away = stats.get("Crosses", (0, 0))
+        corners_home, corners_away = stats.get("Corner kicks", (0, 0))
+
+        home_big = max(0, int(round(on_target_home * 0.6 + xg_home * 1.5)))
+        away_big = max(0, int(round(on_target_away * 0.6 + xg_away * 1.5)))
+        home_box = on_target_home + off_target_home + int(round(crosses_home * 0.4))
+        away_box = on_target_away + off_target_away + int(round(crosses_away * 0.4))
+        home_accuracy = int(round((on_target_home / max(on_target_home + off_target_home + blocked_home, 1)) * 100))
+        away_accuracy = int(round((on_target_away / max(on_target_away + off_target_away + blocked_away, 1)) * 100))
+
+        return [
+            ("Expected goals (xG)", xg_home, xg_away),
+            ("Shots on target", on_target_home, on_target_away),
+            ("Shots off target", off_target_home, off_target_away),
+            ("Blocked shots", blocked_home, blocked_away),
+            ("Big chances", home_big, away_big),
+            ("Touches in box", home_box, away_box),
+            ("Crosses", crosses_home, crosses_away),
+            ("Shot accuracy (%)", home_accuracy, away_accuracy),
+            ("Set-piece threat", corners_home, corners_away),
+        ]
+
+    def attack_summary_percentages(self, match, minute, max_minute):
+        rows = {label: (home, away) for label, home, away in self.attack_stats(match, minute, max_minute)}
+        xg_home, xg_away = rows["Expected goals (xG)"]
+        shots_home, shots_away = rows["Shots on target"]
+        box_home, box_away = rows["Touches in box"]
+        accuracy_home, accuracy_away = rows["Shot accuracy (%)"]
+        return [
+            ("xG Threat", *self.percentage_split(xg_home, xg_away)),
+            ("On Target", *self.percentage_split(shots_home, shots_away)),
+            ("Box Threat", *self.percentage_split(box_home, box_away)),
+            ("Accuracy", accuracy_home, accuracy_away),
+        ]
+
+    def control_stats(self, match, minute, max_minute):
+        stats = self.stat_map(match, minute, max_minute)
+        possession_home, possession_away = stats.get("Possession (%)", (50, 50))
+        throw_home, throw_away = stats.get("Throw ins", (0, 0))
+        corners_home, corners_away = stats.get("Corner kicks", (0, 0))
+        crosses_home, crosses_away = stats.get("Crosses", (0, 0))
+
+        ratio = 0 if max_minute <= 0 else max(0.0, min(minute / max_minute, 1.0))
+        home_pass_accuracy = int(round(76 + possession_home * 0.18 + ratio * 4))
+        away_pass_accuracy = int(round(76 + possession_away * 0.18 + ratio * 4))
+        home_field_tilt = int(round(min(78, max(22, possession_home + corners_home * 2 + match["edge"] * 1.5))))
+        away_field_tilt = 100 - home_field_tilt
+        home_progressive = max(1, int(round(crosses_home * 0.8 + throw_home * 0.35 + ratio * 8)))
+        away_progressive = max(1, int(round(crosses_away * 0.8 + throw_away * 0.35 + ratio * 8)))
+        home_tempo = max(1, int(round((throw_home + corners_home + crosses_home) * 0.9)))
+        away_tempo = max(1, int(round((throw_away + corners_away + crosses_away) * 0.9)))
+
+        return [
+            ("Possession (%)", possession_home, possession_away),
+            ("Pass accuracy (%)", home_pass_accuracy, away_pass_accuracy),
+            ("Field tilt (%)", home_field_tilt, away_field_tilt),
+            ("Progressive entries", home_progressive, away_progressive),
+            ("Corners won", corners_home, corners_away),
+            ("Cross volume", crosses_home, crosses_away),
+            ("Tempo actions", home_tempo, away_tempo),
+            ("Restarts / throw-ins", throw_home, throw_away),
+        ]
+
+    def control_summary_percentages(self, match, minute, max_minute):
+        rows = {label: (home, away) for label, home, away in self.control_stats(match, minute, max_minute)}
+        possession_home, possession_away = rows["Possession (%)"]
+        pass_home, pass_away = rows["Pass accuracy (%)"]
+        tilt_home, tilt_away = rows["Field tilt (%)"]
+        prog_home, prog_away = rows["Progressive entries"]
+        return [
+            ("Possession", possession_home, possession_away),
+            ("Pass Clean", pass_home, pass_away),
+            ("Field Tilt", tilt_home, tilt_away),
+            ("Progression", *self.percentage_split(prog_home, prog_away)),
+        ]
+
+    def defense_stats(self, match, minute, max_minute):
+        stats = self.stat_map(match, minute, max_minute)
+        fouls_home, fouls_away = stats.get("Fouls", (0, 0))
+        yellows_home, yellows_away = stats.get("Yellow cards", (0, 0))
+        saves_home, saves_away = stats.get("Goalkeeper saves", (0, 0))
+        offsides_home, offsides_away = stats.get("Offsides", (0, 0))
+        blocked_home, blocked_away = stats.get("Blocked shots", (0, 0))
+        ratio = 0 if max_minute <= 0 else max(0.0, min(minute / max_minute, 1.0))
+
+        home_duels = max(1, int(round(9 + ratio * 11 + max(match["edge"], 0))))
+        away_duels = max(1, int(round(9 + ratio * 11 + abs(min(match["edge"], 0)))))
+        home_interceptions = max(1, int(round(blocked_home * 1.6 + offsides_home + ratio * 5)))
+        away_interceptions = max(1, int(round(blocked_away * 1.6 + offsides_away + ratio * 5)))
+        home_clearances = max(1, int(round(saves_home * 2.2 + fouls_home * 0.5 + ratio * 4)))
+        away_clearances = max(1, int(round(saves_away * 2.2 + fouls_away * 0.5 + ratio * 4)))
+
+        return [
+            ("Goalkeeper saves", saves_home, saves_away),
+            ("Blocked shots", blocked_home, blocked_away),
+            ("Interceptions", home_interceptions, away_interceptions),
+            ("Clearances", home_clearances, away_clearances),
+            ("Duels won", home_duels, away_duels),
+            ("Offsides forced", offsides_home, offsides_away),
+            ("Fouls committed", fouls_home, fouls_away),
+            ("Yellow cards", yellows_home, yellows_away),
+        ]
+
+    def defense_summary_percentages(self, match, minute, max_minute):
+        rows = {label: (home, away) for label, home, away in self.defense_stats(match, minute, max_minute)}
+        saves_home, saves_away = rows["Goalkeeper saves"]
+        duels_home, duels_away = rows["Duels won"]
+        intercept_home, intercept_away = rows["Interceptions"]
+        discipline_home, discipline_away = rows["Yellow cards"]
+        discipline_left, discipline_right = self.percentage_split(max(1, 5 - discipline_home), max(1, 5 - discipline_away))
+        return [
+            ("Duel Share", *self.percentage_split(duels_home, duels_away)),
+            ("Save Load", *self.percentage_split(saves_home, saves_away)),
+            ("Interceptions", *self.percentage_split(intercept_home, intercept_away)),
+            ("Discipline", discipline_left, discipline_right),
+        ]
+
+    def percentage_split(self, left, right):
+        total = left + right
+        if total <= 0:
+            return 50, 50
+        left_pct = int(round((left / total) * 100))
+        return left_pct, max(0, 100 - left_pct)
 
     def odds_rows(self, match):
         base_home, base_draw, base_away = match["odds"]
