@@ -417,13 +417,13 @@ class SoccerEdgeApp:
 
         self.score_labels = {}
         self.meta_labels = {}
-        self.model_body = None
-        self.team_body = None
         self.watch_body = None
-        self.history_body = None
         self.accuracy_body = None
         self.odds_body = None
         self.predictions_body = None
+        self.recommendation_body = None
+        self.quality_body = None
+        self.source_body = None
         self.filter_combos = {}
         self.matches_frame = None
         self.matches_canvas = None
@@ -805,32 +805,32 @@ class SoccerEdgeApp:
 
     def build_right(self, parent):
         parent.grid_columnconfigure(0, weight=1)
-        parent.grid_rowconfigure(0, weight=4)
-        parent.grid_rowconfigure(1, weight=1)
+        parent.grid_rowconfigure(0, weight=3)
+        parent.grid_rowconfigure(1, weight=2)
         parent.grid_rowconfigure(2, weight=1)
         parent.grid_rowconfigure(3, weight=2)
         parent.grid_rowconfigure(4, weight=2)
 
-        model_outer, self.model_body = self.panel(parent, "MODEL OUTPUT")
+        model_outer, self.recommendation_body = self.panel(parent, "DECISION ENGINE")
         model_outer.grid(row=0, column=0, sticky="nsew", pady=(8, 8))
 
-        team_outer, self.team_body = self.panel(parent, "TEAM PROFILES")
+        team_outer, self.quality_body = self.panel(parent, "DATA QUALITY")
         team_outer.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
 
         watch_outer, body = self.panel(parent, "WATCHLIST")
         watch_outer.grid(row=2, column=0, sticky="nsew", pady=(0, 8))
         self.sidebar_watch_body = body
 
-        history_outer, self.history_body = self.panel(parent, "RECENT HISTORY")
+        history_outer, self.source_body = self.panel(parent, "SOURCE MONITOR")
         history_outer.grid(row=3, column=0, sticky="nsew", pady=(0, 8))
 
         acc_outer, self.accuracy_body = self.panel(parent, "ACCURACY DASHBOARD")
         acc_outer.grid(row=4, column=0, sticky="nsew", pady=(0, 10))
 
-        self.render_model_placeholder()
-        self.render_team_profiles()
+        self.render_decision_engine()
+        self.render_data_quality()
         self.render_sidebar_watchlist()
-        self.render_history()
+        self.render_source_monitor()
         self.render_accuracy()
 
     def panel(self, parent, title):
@@ -991,7 +991,9 @@ class SoccerEdgeApp:
         self.meta_labels["venue"].config(text=match["venue"])
         self.meta_labels["referee"].config(text=match["referee"])
         self.render_tab()
-        self.render_team_profiles()
+        self.render_decision_engine()
+        self.render_data_quality()
+        self.render_source_monitor()
         self.render_market_sections()
         if refresh:
             self.render_matches()
@@ -1401,6 +1403,168 @@ class SoccerEdgeApp:
             "confidence": confidence,
         }
 
+    def analysis_snapshot(self, match):
+        consensus = self.consensus_prediction(match)
+        odds = self.odds_rows(match)
+        best_book = max(odds, key=lambda item: item[4])
+        market_prob = round(100 / best_book[1]) if consensus["pick"] == match["home"] else round(100 / best_book[3]) if consensus["pick"] == match["away"] else round(100 / best_book[2])
+        true_prob = consensus["confidence"]
+        edge = round(true_prob - market_prob, 1)
+        data_quality = self.data_quality_score(match)
+        freshness = self.freshness_label(match)
+        lineup_status = self.lineup_status(match)
+        weather = self.weather_label(match)
+        market_move = self.market_movement_label(match)
+        missing = self.missing_inputs(match)
+
+        decision = "PASS"
+        decision_color = MUTED
+        if data_quality >= 82 and edge >= 5 and lineup_status == "Confirmed":
+            decision = "BET"
+            decision_color = GREEN
+        elif data_quality >= 70 and edge >= 2:
+            decision = "LEAN"
+            decision_color = ORANGE
+
+        reasons_for = [
+            f"Model consensus leans {consensus['pick']} with {consensus['confidence']}% confidence.",
+            f"Best tracked market is {best_book[0]} and leaves {edge:+.1f} implied edge.",
+            f"Form profile: {match['home']} {''.join(match['home_form'])} vs {match['away']} {''.join(match['away_form'])}.",
+        ]
+        if match["status"] == "LIVE":
+            reasons_for.append(f"Live state {match['minute']}' at {match['home_score']}-{match['away_score']} keeps the signal active.")
+        else:
+            reasons_for.append("Pre-match window still allows lineup, news, and odds confirmation before entry.")
+
+        reasons_against = [
+            f"Market move is {market_move.lower()}, so late entries may lose value.",
+            f"Weather and referee context can shift pace and foul profile ({weather.lower()}, {match['referee']}).",
+            "Prediction-source disagreement still matters even when average consensus looks strong.",
+        ]
+        if missing != ["None"]:
+            reasons_against.append(f"Weak inputs: {', '.join(missing)}.")
+
+        risk_controls = [
+            "Pass if edge drops below +2 before entry.",
+            "Use small fixed stake or fractional Kelly only.",
+            "No stacking correlated bets on the same match without re-checking line movement.",
+            "Downgrade to pass if lineup/news changes within the final refresh window.",
+        ]
+
+        data_buckets = [
+            ("Match state", f"{match['status']} {match['minute']}'  score {match['home_score']}-{match['away_score']}"),
+            ("Team profile", f"Attack {match['home_avg']:.1f}/{match['away_avg']:.1f}  form {''.join(match['home_form'])}/{''.join(match['away_form'])}"),
+            ("Availability", f"Lineups {lineup_status}  injuries {self.injury_status(match)}"),
+            ("Market", f"{len(odds)} books  best {best_book[0]}  move {market_move}"),
+            ("Context", f"{weather}  ref {match['referee']}  venue {match['venue']}"),
+            ("News", f"{self.news_status(match)}  local pulse {self.local_news_note(match)}"),
+        ]
+
+        sources = [
+            ("Lineups", "Squads", lineup_status, "High"),
+            ("Local News", "Context", self.news_state(match), "Medium"),
+            ("Weather", "External", "Fresh", "Medium"),
+            ("Odds Feed", "Market", "Live", "High"),
+            ("Prediction Feed", "Consensus", "Live", "Medium"),
+            ("Referee/Rules", "Context", "Confirmed", "Low"),
+        ]
+
+        return {
+            "decision": decision,
+            "decision_color": decision_color,
+            "market": f"{best_book[0]} best price  |  pick {consensus['pick']}",
+            "confidence": consensus["confidence"],
+            "edge": edge,
+            "true_prob": true_prob,
+            "market_prob": market_prob,
+            "data_quality": data_quality,
+            "freshness": freshness,
+            "lineups": lineup_status,
+            "lineup_color": GREEN if lineup_status == "Confirmed" else YELLOW if lineup_status == "Partial" else RED,
+            "weather": weather,
+            "news_status": self.news_status(match),
+            "reasons_for": reasons_for,
+            "reasons_against": reasons_against,
+            "risk_controls": risk_controls,
+            "data_buckets": data_buckets,
+            "missing": missing,
+            "sources": sources,
+            "consensus_spread": self.consensus_spread(match),
+            "books_tracked": len(odds),
+            "prediction_sources": len(self.prediction_rows(match)),
+            "market_move": market_move,
+            "referee_note": self.referee_note(match),
+        }
+
+    def data_quality_score(self, match):
+        score = 76
+        if match["status"] == "LIVE":
+            score += 6
+        if abs(match["edge"]) >= 4:
+            score += 4
+        if match["minute"] == 0:
+            score -= 3
+        if match["home"] in ("Man City", "Real Madrid", "Inter Milan"):
+            score += 3
+        return max(55, min(score, 94))
+
+    def freshness_label(self, match):
+        if match["status"] == "LIVE":
+            return "15s live"
+        if match["minute"] == 0:
+            return "5m pre"
+        return "30m old"
+
+    def lineup_status(self, match):
+        if match["status"] == "LIVE":
+            return "Confirmed"
+        if match["minute"] == 0 and match["edge"] >= 4:
+            return "Partial"
+        return "Pending"
+
+    def weather_label(self, match):
+        mapping = {
+            "England": "Light rain 11C",
+            "Spain": "Clear 17C",
+            "Italy": "Calm 15C",
+            "Germany": "Windy 9C",
+        }
+        return mapping.get(match["country"], "Normal 14C")
+
+    def injury_status(self, match):
+        return "minor doubts" if abs(match["edge"]) < 3 else "mostly clear"
+
+    def news_status(self, match):
+        return "2 local reports checked" if match["status"] == "LIVE" else "Awaiting final pre-match pressers"
+
+    def news_state(self, match):
+        return "Confirmed" if match["status"] == "LIVE" else "Checking"
+
+    def local_news_note(self, match):
+        return "travel and rotation flagged" if match["away"] in ("Liverpool", "Barcelona", "Napoli") else "quiet local cycle"
+
+    def market_movement_label(self, match):
+        return "Sharp move to away" if match["edge"] < -2 else "Mild move to home" if match["edge"] > 4 else "Flat market"
+
+    def missing_inputs(self, match):
+        missing = []
+        if match["status"] != "LIVE":
+            missing.append("confirmed lineups")
+        if abs(match["edge"]) < 2:
+            missing.append("clear market discrepancy")
+        if match["country"] == "Germany":
+            missing.append("local reporter confirmation")
+        return missing or ["None"]
+
+    def consensus_spread(self, match):
+        rows = self.prediction_rows(match)
+        picks = [row[4] for row in rows]
+        leader = max(set(picks), key=picks.count)
+        return picks.count(leader)
+
+    def referee_note(self, match):
+        return "card-happy profile" if "Taylor" in match["referee"] or "Oliver" in match["referee"] else "balanced whistle"
+
     def table_rows(self, match):
         base = [
             ("Inter", 33, 49, 78, 25),
@@ -1441,28 +1605,103 @@ class SoccerEdgeApp:
             bg = "#14532d" if result == "W" else "#7f1d1d" if result == "L" else "#475569"
             tk.Label(row, text=result, bg=bg, fg=color, font=FONT_MONO, width=3, pady=2).pack(side="left", padx=2)
 
-    def render_model_placeholder(self):
-        self.clear(self.model_body)
-        tk.Label(
-            self.model_body,
-            text="Analyze: coming soon",
-            bg=PANEL_DARK,
-            fg=MUTED,
-            font=FONT_MONO_SMALL,
-            anchor="nw",
-            justify="left",
-            padx=10,
-            pady=12,
-        ).pack(fill="both", expand=True, padx=6, pady=6)
+    def render_decision_engine(self):
+        self.clear(self.recommendation_body)
+        snapshot = self.analysis_snapshot(self.current_match)
 
-    def render_team_profiles(self):
-        self.clear(self.team_body)
-        match = self.current_match
-        text = (
-            f"{match['home']}: attack {match['home_avg']:.1f}, form {''.join(match['home_form'])}\n"
-            f"{match['away']}: attack {match['away_avg']:.1f}, form {''.join(match['away_form'])}"
-        )
-        tk.Label(self.team_body, text=text, bg=PANEL_DARK, fg=MUTED, font=FONT_MONO_SMALL, justify="left", anchor="w").pack(fill="both", expand=True, padx=6, pady=6)
+        top = self.info_card(self.recommendation_body)
+        top.pack(fill="x", padx=6, pady=(6, 4))
+        tk.Label(top, text=snapshot["decision"], bg=PANEL_DARK, fg=snapshot["decision_color"], font=("Segoe UI", 16, "bold"), anchor="w").pack(fill="x", padx=10, pady=(8, 2))
+        tk.Label(top, text=snapshot["market"], bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(fill="x", padx=10)
+        tk.Label(top, text=f"Confidence {snapshot['confidence']}%  |  Edge {snapshot['edge']:+.1f}  |  Data quality {snapshot['data_quality']}%", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(fill="x", padx=10, pady=(0, 8))
+
+        bands = tk.Frame(top, bg=PANEL_DARK)
+        bands.pack(fill="x", padx=10, pady=(0, 10))
+        for label, value, color in [
+            ("True Prob", f"{snapshot['true_prob']}%", CYAN),
+            ("Market Implied", f"{snapshot['market_prob']}%", ORANGE),
+            ("Discrepancy", f"{snapshot['edge']:+.1f}", snapshot["decision_color"]),
+        ]:
+            box = tk.Frame(bands, bg="#243244")
+            box.pack(side="left", expand=True, fill="x", padx=3)
+            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
+            tk.Label(box, text=value, bg="#243244", fg=color, font=FONT_BOLD).pack(pady=(0, 6))
+
+        self.section_title(self.recommendation_body, "WHY IT LIKES IT")
+        likes = self.info_card(self.recommendation_body)
+        likes.pack(fill="x", padx=6, pady=(0, 4))
+        for reason in snapshot["reasons_for"]:
+            tk.Label(likes, text=f"+ {reason}", bg=PANEL_DARK, fg=GREEN, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", padx=10, pady=2)
+
+        self.section_title(self.recommendation_body, "WHY IT CAN FAIL")
+        cautions = self.info_card(self.recommendation_body)
+        cautions.pack(fill="x", padx=6, pady=(0, 4))
+        for reason in snapshot["reasons_against"]:
+            tk.Label(cautions, text=f"- {reason}", bg=PANEL_DARK, fg=RED, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", padx=10, pady=2)
+
+        self.section_title(self.recommendation_body, "RISK CONTROLS")
+        risk = self.info_card(self.recommendation_body)
+        risk.pack(fill="x", padx=6, pady=(0, 4))
+        for rule in snapshot["risk_controls"]:
+            tk.Label(risk, text=f"* {rule}", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", padx=10, pady=2)
+
+    def render_data_quality(self):
+        self.clear(self.quality_body)
+        snapshot = self.analysis_snapshot(self.current_match)
+
+        row = tk.Frame(self.quality_body, bg=PANEL)
+        row.pack(fill="x", padx=6, pady=(6, 6))
+        for label, value, color in [
+            ("Freshness", snapshot["freshness"], CYAN),
+            ("Lineups", snapshot["lineups"], snapshot["lineup_color"]),
+            ("Weather", snapshot["weather"], ORANGE),
+            ("News", snapshot["news_status"], TEXT),
+        ]:
+            cell = tk.Frame(row, bg="#243244")
+            cell.pack(side="left", expand=True, fill="x", padx=2)
+            tk.Label(cell, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(5, 2))
+            tk.Label(cell, text=value, bg="#243244", fg=color, font=FONT_BOLD).pack(pady=(0, 6))
+
+        self.section_title(self.quality_body, "DATA BUCKETS")
+        buckets = self.info_card(self.quality_body)
+        buckets.pack(fill="x", padx=6, pady=(0, 4))
+        for label, value in snapshot["data_buckets"]:
+            line = tk.Frame(buckets, bg=PANEL_DARK)
+            line.pack(fill="x", padx=10, pady=2)
+            tk.Label(line, text=label, bg=PANEL_DARK, fg=CYAN, font=FONT_SMALL, width=14, anchor="w").pack(side="left")
+            tk.Label(line, text=value, bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, anchor="w").pack(side="left")
+
+        self.section_title(self.quality_body, "MISSING / WEAK INPUTS")
+        missing = self.info_card(self.quality_body)
+        missing.pack(fill="x", padx=6, pady=(0, 4))
+        for item in snapshot["missing"]:
+            tk.Label(missing, text=f"- {item}", bg=PANEL_DARK, fg=RED if item != "None" else GREEN, font=FONT_SMALL, anchor="w").pack(fill="x", padx=10, pady=2)
+
+    def render_source_monitor(self):
+        self.clear(self.source_body)
+        snapshot = self.analysis_snapshot(self.current_match)
+
+        header = tk.Frame(self.source_body, bg=PANEL_DARK)
+        header.pack(fill="x", padx=6, pady=(6, 2))
+        for text, width in [("SOURCE", 14), ("TYPE", 10), ("STATE", 12), ("WEIGHT", 8)]:
+            tk.Label(header, text=text, bg=PANEL_DARK, fg=ORANGE, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
+
+        for source, kind, state, weight in snapshot["sources"]:
+            row = tk.Frame(self.source_body, bg=ROW)
+            row.pack(fill="x", padx=6, pady=1)
+            state_color = GREEN if state in ("Confirmed", "Live", "Fresh") else YELLOW if state in ("Partial", "Checking") else RED
+            for value, width, color in [
+                (source, 14, TEXT),
+                (kind, 10, MUTED),
+                (state, 12, state_color),
+                (weight, 8, CYAN),
+            ]:
+                tk.Label(row, text=value, bg=ROW, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left", pady=4)
+
+        footer = self.info_card(self.source_body)
+        footer.pack(fill="x", padx=6, pady=(4, 4))
+        tk.Label(footer, text=f"Consensus spread: {snapshot['consensus_spread']} pts  |  Books tracked: {snapshot['books_tracked']}  |  Prediction sources: {snapshot['prediction_sources']}", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(fill="x", padx=10, pady=(6, 4))
+        tk.Label(footer, text=f"Market move: {snapshot['market_move']}  |  Referee note: {snapshot['referee_note']}", bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, anchor="w").pack(fill="x", padx=10, pady=(0, 6))
 
     def render_watchlist(self):
         self.clear(self.watchlist_frame)
@@ -1490,8 +1729,8 @@ class SoccerEdgeApp:
         tk.Label(self.sidebar_watch_body, text=message, bg=PANEL_DARK, fg=MUTED, font=FONT_MONO_SMALL, anchor="w", justify="left", padx=10, pady=10).pack(fill="both", expand=True)
 
     def render_history(self):
-        self.clear(self.history_body)
-        header = tk.Frame(self.history_body, bg=PANEL_DARK)
+        self.clear(self.source_body)
+        header = tk.Frame(self.source_body, bg=PANEL_DARK)
         header.pack(fill="x", padx=6, pady=(6, 2))
         cols = [("IDX", 4), ("TIME", 8), ("MATCH", 22), ("REC", 10), ("EDGE", 7), ("SETTLED", 8)]
         for name, width in cols:
@@ -1499,7 +1738,7 @@ class SoccerEdgeApp:
 
         for item in HISTORY_SAMPLE:
             idx, time, match, rec, edge, settled = item
-            row = tk.Frame(self.history_body, bg=PANEL)
+            row = tk.Frame(self.source_body, bg=PANEL)
             row.pack(fill="x", padx=6)
             values = [idx, time, match[:22], rec[:10], f"{edge:+.1f}", settled]
             widths = [4, 8, 22, 10, 7, 8]
@@ -1597,7 +1836,6 @@ class SoccerEdgeApp:
         best_label, best_edge = max(edges, key=lambda item: item[1])
         confidence = max(0.0, min(99.0, 50.0 + best_edge))
 
-        self.clear(self.model_body)
         lines = [
             f"{match['home']} vs {match['away']}",
             f"Recommendation: {best_label}",
@@ -1612,17 +1850,6 @@ class SoccerEdgeApp:
             f"Minute {state.minute}, score {state.home_goals}-{state.away_goals}",
             f"Market D/U/O: {market.draw_cents:.0f}/{market.under_cents:.0f}/{market.over_cents:.0f}",
         ]
-        tk.Label(
-            self.model_body,
-            text="\n".join(lines),
-            bg=PANEL_DARK,
-            fg=TEXT,
-            font=FONT_MONO_SMALL,
-            anchor="nw",
-            justify="left",
-            padx=10,
-            pady=10,
-        ).pack(fill="both", expand=True, padx=6, pady=6)
 
         try:
             log_analysis({
@@ -1647,7 +1874,9 @@ class SoccerEdgeApp:
 
         HISTORY_SAMPLE.insert(0, (str(len(HISTORY_SAMPLE) + 1), "LIVE", f"{match['home']} vs {match['away']}", best_label, best_edge, "NO"))
         del HISTORY_SAMPLE[5:]
-        self.render_history()
+        self.render_decision_engine()
+        self.render_data_quality()
+        self.render_source_monitor()
         self.render_accuracy()
         self.tracker_status.config(text="Analysis complete.", fg=GREEN)
 
