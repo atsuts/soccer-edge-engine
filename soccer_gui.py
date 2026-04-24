@@ -1354,9 +1354,77 @@ class SoccerEdgeApp:
         ).pack(fill="x")
 
     def render_stats_tab(self, parent, match):
-        self.section_title(parent, "MATCH STATS")
-        for label, home, away in self.match_stats(match):
-            self.stat_bar(parent, label, home, away)
+        max_minute = max(match["minute"], 1) if match["status"] == "LIVE" else 90
+
+        self.section_title(parent, "MATCH STATS TIMELINE")
+
+        summary = self.info_card(parent)
+        summary.pack(fill="x", pady=(0, 8))
+        summary_row = tk.Frame(summary, bg=PANEL_DARK)
+        summary_row.pack(fill="x", padx=10, pady=8)
+        summary_labels = {}
+        for label, home_pct, away_pct in self.stats_summary_percentages(match, max_minute):
+            box = tk.Frame(summary_row, bg="#243244")
+            box.pack(side="left", expand=True, fill="x", padx=3)
+            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
+            value_label = tk.Label(box, text=f"{home_pct}% / {away_pct}%", bg="#243244", fg=TEXT, font=FONT_BOLD)
+            value_label.pack(pady=(0, 6))
+            summary_labels[label] = value_label
+
+        slider_card = self.info_card(parent)
+        slider_card.pack(fill="x", pady=(0, 8))
+        top = tk.Frame(slider_card, bg=PANEL_DARK)
+        top.pack(fill="x", padx=10, pady=(8, 2))
+        tk.Label(top, text="MATCH REPLAY", bg=PANEL_DARK, fg=CYAN, font=FONT_BOLD, anchor="w").pack(side="left")
+        minute_label = tk.Label(top, text="", bg=PANEL_DARK, fg=ORANGE, font=FONT_BOLD, anchor="e")
+        minute_label.pack(side="right")
+
+        scale_wrap = tk.Frame(slider_card, bg=PANEL_DARK)
+        scale_wrap.pack(fill="x", padx=10, pady=(0, 8))
+        tk.Label(scale_wrap, text="0'", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL).pack(side="left")
+        slider = tk.Scale(
+            scale_wrap,
+            from_=0,
+            to=max_minute,
+            orient="horizontal",
+            showvalue=False,
+            resolution=1,
+            bg=PANEL_DARK,
+            fg=TEXT,
+            troughcolor="#243244",
+            highlightthickness=0,
+            activebackground=ORANGE,
+            length=520,
+        )
+        slider.pack(side="left", fill="x", expand=True, padx=8)
+        tk.Label(scale_wrap, text=f"{max_minute}'", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL).pack(side="right")
+
+        helper = tk.Label(
+            slider_card,
+            text="Slide across the match to replay how the stat balance changed minute by minute.",
+            bg=PANEL_DARK,
+            fg=MUTED,
+            font=FONT_SMALL,
+            anchor="w",
+        )
+        helper.pack(fill="x", padx=10, pady=(0, 8))
+
+        stats_frame = tk.Frame(parent, bg=PANEL)
+        stats_frame.pack(fill="x")
+
+        def refresh_stats(value):
+            minute = int(float(value))
+            minute_label.config(text=f"{minute:02d}'")
+            for label, home_pct, away_pct in self.stats_summary_percentages(match, minute, max_minute):
+                if label in summary_labels:
+                    summary_labels[label].config(text=f"{home_pct}% / {away_pct}%")
+            self.clear(stats_frame)
+            for label, home, away in self.match_stats_at_minute(match, minute, max_minute):
+                self.stat_bar(stats_frame, label, home, away)
+
+        slider.configure(command=refresh_stats)
+        slider.set(min(match["minute"], max_minute))
+        refresh_stats(slider.get())
 
     def render_lineups_tab(self, parent, match):
         self.section_title(parent, f"{match['home'].upper()}  4-3-3")
@@ -1485,6 +1553,73 @@ class SoccerEdgeApp:
             ("Crosses", 14, 10),
             ("Goalkeeper saves", 2, 4),
         ]
+
+    def match_stats_at_minute(self, match, minute, max_minute=90):
+        ratio = 0 if max_minute <= 0 else max(0.0, min(minute / max_minute, 1.0))
+        live_bias = ((match["id"] % 5) - 2) / 14
+        rows = []
+
+        for label, final_home, final_away in self.match_stats(match):
+            if label == "Possession (%)":
+                swing = live_bias * (0.6 - ratio) * 18
+                home_share = max(32, min(68, final_home + swing))
+                away_share = 100 - home_share
+                rows.append((label, int(round(home_share)), int(round(away_share))))
+                continue
+
+            home_progress = max(0.0, ratio + live_bias * 0.18)
+            away_progress = max(0.0, ratio - live_bias * 0.18)
+
+            if label == "Expected goals (xG)":
+                home_value = round(final_home * self.timeline_curve(home_progress), 2)
+                away_value = round(final_away * self.timeline_curve(away_progress), 2)
+            else:
+                home_value = int(round(final_home * self.timeline_curve(home_progress)))
+                away_value = int(round(final_away * self.timeline_curve(away_progress)))
+
+            rows.append((label, home_value, away_value))
+
+        if match["status"] == "UP" and minute == 0:
+            adjusted_rows = []
+            for label, home_value, away_value in rows:
+                if label == "Possession (%)":
+                    adjusted_rows.append((label, 50, 50))
+                elif label == "Expected goals (xG)":
+                    adjusted_rows.append((label, 0.0, 0.0))
+                else:
+                    adjusted_rows.append((label, 0, 0))
+            return adjusted_rows
+
+        return rows
+
+    def stats_summary_percentages(self, match, minute, max_minute=90):
+        current_stats = {label: (home, away) for label, home, away in self.match_stats_at_minute(match, minute, max_minute)}
+        xg_home, xg_away = current_stats.get("Expected goals (xG)", (0.0, 0.0))
+        shots_home, shots_away = current_stats.get("Shots on target", (0, 0))
+        possession_home, possession_away = current_stats.get("Possession (%)", (50, 50))
+        pressure_home, pressure_away = current_stats.get("Corner kicks", (0, 0))
+
+        def split(left, right):
+            total = left + right
+            if total <= 0:
+                return 50, 50
+            left_pct = int(round((left / total) * 100))
+            return left_pct, max(0, 100 - left_pct)
+
+        return [
+            ("xG Share", *split(xg_home, xg_away)),
+            ("Shot Quality", *split(shots_home, shots_away)),
+            ("Possession", int(possession_home), int(possession_away)),
+            ("Pressure", *split(pressure_home, pressure_away)),
+        ]
+
+    def timeline_curve(self, ratio):
+        ratio = max(0.0, min(ratio, 1.0))
+        if ratio <= 0:
+            return 0.0
+        if ratio >= 1:
+            return 1.0
+        return min(1.0, max(0.0, (ratio ** 0.84) * (0.92 + ratio * 0.08)))
 
     def odds_rows(self, match):
         base_home, base_draw, base_away = match["odds"]
