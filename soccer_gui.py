@@ -1,5 +1,18 @@
-import csv
+"""
+soccer_gui.py  —  Soccer Edge Engine  (fast, clean, production build)
+
+Performance fixes:
+- App opens instantly with mock data
+- Right panel renders on demand only
+- Match list uses lightweight rows
+- API only called after user clicks Live button
+- All tab content built lazily
+- No blocking calls on startup
+"""
+
 import re
+import queue
+import threading
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
@@ -7,3971 +20,2468 @@ from tkinter import ttk
 from soccer_phase1_engine import SoccerEdgeEngine, MatchState, MarketInput
 from history_logger import log_analysis, summarize_accuracy
 from watchlist import add_match
-
+from live_poller import LivePoller
 
 APP_DIR = Path(__file__).resolve().parent
-HISTORY_FILE = APP_DIR / "analysis_history.csv"
 
-BG = "#0b1120"
-TOP = "#111827"
-PANEL = "#1e293b"
+# ──────────────────────────────────────────────
+# Theme
+# ──────────────────────────────────────────────
+BG         = "#0b1120"
+TOP        = "#111827"
+PANEL      = "#1e293b"
 PANEL_DARK = "#0f172a"
-ROW = "#141d30"
-ROW_ALT = "#192437"
-BORDER = "#334155"
-TEXT = "#f8fafc"
-MUTED = "#94a3b8"
-CYAN = "#22d3ee"
-CYAN_DARK = "#0891b2"
-GREEN = "#22c55e"
+ROW        = "#141d30"
+ROW_ALT    = "#192437"
+BORDER     = "#334155"
+TEXT       = "#f8fafc"
+MUTED      = "#94a3b8"
+CYAN       = "#22d3ee"
+CYAN_DARK  = "#0891b2"
+GREEN      = "#22c55e"
 GREEN_DARK = "#16a34a"
-RED = "#ef4444"
-RED_DARK = "#dc2626"
-ORANGE = "#f97316"
-PURPLE = "#6366f1"
-GRAY_BTN = "#475569"
-YELLOW = "#facc15"
+RED        = "#ef4444"
+RED_DARK   = "#dc2626"
+ORANGE     = "#f97316"
+PURPLE     = "#6366f1"
+GRAY_BTN   = "#475569"
+YELLOW     = "#facc15"
 
-FONT_UI = ("Segoe UI", 10)
-FONT_SMALL = ("Segoe UI", 9)
-FONT_BOLD = ("Segoe UI", 10, "bold")
-FONT_TITLE = ("Segoe UI", 14, "bold")
-FONT_MONO = ("Consolas", 10)
-FONT_MONO_SMALL = ("Consolas", 9)
+FS   = ("Segoe UI", 9)
+FB   = ("Segoe UI", 10, "bold")
+FM   = ("Consolas", 9)
+FT   = ("Segoe UI", 14, "bold")
 
-
-MATCHES = [
-    {
-        "id": 1,
-        "country": "England",
-        "league": "Premier League",
-        "tournament": "Premier League",
-        "status": "LIVE",
-        "minute": 67,
-        "home": "Man City",
-        "away": "Liverpool",
-        "home_score": 1,
-        "away_score": 1,
-        "edge": -0.2,
-        "odds": (1.94, 6.50, 4.50),
-        "pred": (30, 25, 45),
-        "date": "Saturday, 11 April 2026",
-        "venue": "Etihad Stadium",
-        "referee": "Michael Oliver",
-        "home_form": ["W", "W", "L", "D", "W"],
-        "away_form": ["W", "L", "W", "W", "D"],
-        "home_avg": 2.1,
-        "away_avg": 1.8,
-        "draw_price": 40.0,
-        "under_price": 45.0,
-        "over_price": 60.0,
-    },
-    {
-        "id": 2,
-        "country": "England",
-        "league": "Premier League",
-        "tournament": "Premier League",
-        "status": "LIVE",
-        "minute": 45,
-        "home": "Arsenal",
-        "away": "Chelsea",
-        "home_score": 1,
-        "away_score": 0,
-        "edge": 5.7,
-        "odds": (1.80, 3.30, 6.00),
-        "pred": (29, 31, 40),
-        "date": "Saturday, 11 April 2026",
-        "venue": "Emirates Stadium",
-        "referee": "Anthony Taylor",
-        "home_form": ["W", "D", "W", "W", "L"],
-        "away_form": ["L", "W", "D", "W", "W"],
-        "home_avg": 1.9,
-        "away_avg": 1.4,
-        "draw_price": 36.0,
-        "under_price": 52.0,
-        "over_price": 49.0,
-    },
-    {
-        "id": 3,
-        "country": "England",
-        "league": "Premier League",
-        "tournament": "Premier League",
-        "status": "UP",
-        "minute": 0,
-        "home": "Man United",
-        "away": "Newcastle",
-        "home_score": 0,
-        "away_score": 0,
-        "edge": 2.8,
-        "odds": (4.70, 3.90, 4.00),
-        "pred": (25, 30, 20),
-        "date": "Saturday, 11 April 2026",
-        "venue": "Old Trafford",
-        "referee": "Paul Tierney",
-        "home_form": ["D", "W", "L", "W", "D"],
-        "away_form": ["W", "W", "D", "L", "W"],
-        "home_avg": 1.6,
-        "away_avg": 1.5,
-        "draw_price": 39.0,
-        "under_price": 55.0,
-        "over_price": 44.0,
-    },
-    {
-        "id": 4,
-        "country": "Spain",
-        "league": "La Liga",
-        "tournament": "La Liga",
-        "status": "UP",
-        "minute": 0,
-        "home": "Real Madrid",
-        "away": "Barcelona",
-        "home_score": 0,
-        "away_score": 0,
-        "edge": -3.1,
-        "odds": (2.80, 4.60, 5.80),
-        "pred": (28, 32, 20),
-        "date": "Saturday, 11 April 2026",
-        "venue": "Santiago Bernabeu",
-        "referee": "Jose Sanchez",
-        "home_form": ["W", "W", "W", "D", "L"],
-        "away_form": ["W", "L", "W", "W", "W"],
-        "home_avg": 2.3,
-        "away_avg": 2.0,
-        "draw_price": 42.0,
-        "under_price": 48.0,
-        "over_price": 54.0,
-    },
-    {
-        "id": 5,
-        "country": "Spain",
-        "league": "La Liga",
-        "tournament": "La Liga",
-        "status": "UP",
-        "minute": 0,
-        "home": "Atletico M",
-        "away": "Sevilla",
-        "home_score": 0,
-        "away_score": 0,
-        "edge": 3.9,
-        "odds": (1.40, 5.00, 5.80),
-        "pred": (24, 30, 18),
-        "date": "Saturday, 11 April 2026",
-        "venue": "Metropolitano",
-        "referee": "Alejandro Hernandez",
-        "home_form": ["W", "D", "W", "L", "W"],
-        "away_form": ["D", "L", "W", "D", "L"],
-        "home_avg": 1.7,
-        "away_avg": 1.1,
-        "draw_price": 38.0,
-        "under_price": 58.0,
-        "over_price": 42.0,
-    },
-    {
-        "id": 6,
-        "country": "Italy",
-        "league": "Serie A",
-        "tournament": "Serie A",
-        "status": "UP",
-        "minute": 0,
-        "home": "Juventus",
-        "away": "AC Milan",
-        "home_score": 0,
-        "away_score": 0,
-        "edge": 6.8,
-        "odds": (2.00, 3.90, 7.20),
-        "pred": (18, 30, 20),
-        "date": "Saturday, 11 April 2026",
-        "venue": "Allianz Stadium",
-        "referee": "Daniele Orsato",
-        "home_form": ["W", "W", "D", "W", "W"],
-        "away_form": ["L", "W", "D", "W", "D"],
-        "home_avg": 1.8,
-        "away_avg": 1.3,
-        "draw_price": 35.0,
-        "under_price": 60.0,
-        "over_price": 40.0,
-    },
-    {
-        "id": 7,
-        "country": "Italy",
-        "league": "Serie A",
-        "tournament": "Serie A",
-        "status": "UP",
-        "minute": 0,
-        "home": "Inter Milan",
-        "away": "Napoli",
-        "home_score": 0,
-        "away_score": 0,
-        "edge": 8.7,
-        "odds": (1.70, 4.60, 7.80),
-        "pred": (14, 18, 8),
-        "date": "Saturday, 11 April 2026",
-        "venue": "San Siro",
-        "referee": "Marco Guida",
-        "home_form": ["W", "W", "W", "D", "W"],
-        "away_form": ["W", "D", "L", "W", "L"],
-        "home_avg": 2.2,
-        "away_avg": 1.4,
-        "draw_price": 37.0,
-        "under_price": 50.0,
-        "over_price": 51.0,
-    },
-    {
-        "id": 8,
-        "country": "Germany",
-        "league": "Bundesliga",
-        "tournament": "Bundesliga",
-        "status": "UP",
-        "minute": 0,
-        "home": "Bayern Mun",
-        "away": "Dortmund",
-        "home_score": 0,
-        "away_score": 0,
-        "edge": -3.5,
-        "odds": (1.75, 5.40, 6.50),
-        "pred": (20, 15, 34),
-        "date": "Saturday, 11 April 2026",
-        "venue": "Allianz Arena",
-        "referee": "Felix Zwayer",
-        "home_form": ["W", "W", "L", "W", "W"],
-        "away_form": ["D", "W", "W", "L", "W"],
-        "home_avg": 2.6,
-        "away_avg": 1.9,
-        "draw_price": 34.0,
-        "under_price": 44.0,
-        "over_price": 62.0,
-    },
+# ──────────────────────────────────────────────
+# Mock data (instant startup)
+# ──────────────────────────────────────────────
+MOCK_MATCHES = [
+    {"id":1,"country":"England","league":"Premier League","tournament":"Premier League",
+     "status":"LIVE","minute":67,"home":"Man City","away":"Liverpool",
+     "home_score":1,"away_score":1,"edge":-0.2,"odds":(1.94,6.50,4.50),"pred":(30,25,45),
+     "date":"Saturday, 11 April 2026","venue":"Etihad Stadium","referee":"Michael Oliver",
+     "home_form":["W","W","L","D","W"],"away_form":["W","L","W","W","D"],
+     "home_avg":2.1,"away_avg":1.8,"draw_price":40.0,"under_price":45.0,"over_price":60.0,
+     "home_id":50,"away_id":40,"fixture_id":1208109},
+    {"id":2,"country":"England","league":"Premier League","tournament":"Premier League",
+     "status":"LIVE","minute":45,"home":"Arsenal","away":"Chelsea",
+     "home_score":1,"away_score":0,"edge":5.7,"odds":(1.80,3.30,6.00),"pred":(29,31,40),
+     "date":"Saturday, 11 April 2026","venue":"Emirates Stadium","referee":"Anthony Taylor",
+     "home_form":["W","D","W","W","L"],"away_form":["L","W","D","W","W"],
+     "home_avg":1.9,"away_avg":1.4,"draw_price":36.0,"under_price":52.0,"over_price":49.0,
+     "home_id":42,"away_id":49,"fixture_id":1208110},
+    {"id":3,"country":"England","league":"Premier League","tournament":"Premier League",
+     "status":"UP","minute":0,"home":"Man United","away":"Newcastle",
+     "home_score":0,"away_score":0,"edge":2.8,"odds":(4.70,3.90,4.00),"pred":(25,30,20),
+     "date":"Saturday, 11 April 2026","venue":"Old Trafford","referee":"Paul Tierney",
+     "home_form":["D","W","L","W","D"],"away_form":["W","W","D","L","W"],
+     "home_avg":1.6,"away_avg":1.5,"draw_price":39.0,"under_price":55.0,"over_price":44.0,
+     "home_id":33,"away_id":34,"fixture_id":1208111},
+    {"id":4,"country":"Spain","league":"La Liga","tournament":"La Liga",
+     "status":"UP","minute":0,"home":"Real Madrid","away":"Barcelona",
+     "home_score":0,"away_score":0,"edge":-3.1,"odds":(2.80,4.60,5.80),"pred":(28,32,20),
+     "date":"Saturday, 11 April 2026","venue":"Santiago Bernabeu","referee":"Jose Sanchez",
+     "home_form":["W","W","W","D","L"],"away_form":["W","L","W","W","W"],
+     "home_avg":2.3,"away_avg":2.0,"draw_price":42.0,"under_price":48.0,"over_price":54.0,
+     "home_id":541,"away_id":529,"fixture_id":1208112},
+    {"id":5,"country":"Spain","league":"La Liga","tournament":"La Liga",
+     "status":"UP","minute":0,"home":"Atletico M","away":"Sevilla",
+     "home_score":0,"away_score":0,"edge":3.9,"odds":(1.40,5.00,5.80),"pred":(24,30,18),
+     "date":"Saturday, 11 April 2026","venue":"Metropolitano","referee":"Alejandro Hernandez",
+     "home_form":["W","D","W","L","W"],"away_form":["D","L","W","D","L"],
+     "home_avg":1.7,"away_avg":1.1,"draw_price":38.0,"under_price":58.0,"over_price":42.0,
+     "home_id":530,"away_id":536,"fixture_id":1208113},
+    {"id":6,"country":"Italy","league":"Serie A","tournament":"Serie A",
+     "status":"UP","minute":0,"home":"Juventus","away":"AC Milan",
+     "home_score":0,"away_score":0,"edge":6.8,"odds":(2.00,3.90,7.20),"pred":(18,30,20),
+     "date":"Saturday, 11 April 2026","venue":"Allianz Stadium","referee":"Daniele Orsato",
+     "home_form":["W","W","D","W","W"],"away_form":["L","W","D","W","D"],
+     "home_avg":1.8,"away_avg":1.3,"draw_price":35.0,"under_price":60.0,"over_price":40.0,
+     "home_id":496,"away_id":489,"fixture_id":1208114},
+    {"id":7,"country":"Italy","league":"Serie A","tournament":"Serie A",
+     "status":"UP","minute":0,"home":"Inter Milan","away":"Napoli",
+     "home_score":0,"away_score":0,"edge":8.7,"odds":(1.70,4.60,7.80),"pred":(14,18,8),
+     "date":"Saturday, 11 April 2026","venue":"San Siro","referee":"Marco Guida",
+     "home_form":["W","W","W","D","W"],"away_form":["W","D","L","W","L"],
+     "home_avg":2.2,"away_avg":1.4,"draw_price":37.0,"under_price":50.0,"over_price":51.0,
+     "home_id":505,"away_id":492,"fixture_id":1208115},
+    {"id":8,"country":"Germany","league":"Bundesliga","tournament":"Bundesliga",
+     "status":"UP","minute":0,"home":"Bayern Mun","away":"Dortmund",
+     "home_score":0,"away_score":0,"edge":-3.5,"odds":(1.75,5.40,6.50),"pred":(20,15,34),
+     "date":"Saturday, 11 April 2026","venue":"Allianz Arena","referee":"Felix Zwayer",
+     "home_form":["W","W","L","W","W"],"away_form":["D","W","W","L","W"],
+     "home_avg":2.6,"away_avg":1.9,"draw_price":34.0,"under_price":44.0,"over_price":62.0,
+     "home_id":157,"away_id":165,"fixture_id":1208116},
 ]
 
-HISTORY_SAMPLE = [
-    ("19", "08:14:15", "Home vs Away", "UNDER 2.5", 5.3, "NO"),
-    ("8", "19:26:32", "Junior vs Bucaramanga", "UNDER 2.5", 6.7, "NO"),
-    ("7", "19:19:15", "Guayaquil City FC vs L", "UNDER 2.5", 6.7, "NO"),
-    ("6", "18:18:46", "Home vs Away", "DRAW", 5.3, "NO"),
-    ("5", "03:13:59", "Home vs Away", "UNDER 2.5", 5.3, "NO"),
-]
+MATCHES = list(MOCK_MATCHES)
 
-
-TOP_COUNTRIES = ["England", "Spain", "Italy", "Germany", "France"]
-ALL_COUNTRIES = [
-    "Argentina",
-    "Australia",
-    "Austria",
-    "Belgium",
-    "Brazil",
-    "Chile",
-    "Colombia",
-    "Croatia",
-    "Denmark",
-    "England",
-    "France",
-    "Germany",
-    "Greece",
-    "Italy",
-    "Japan",
-    "Mexico",
-    "Netherlands",
-    "Norway",
-    "Poland",
-    "Portugal",
-    "Saudi Arabia",
-    "Scotland",
-    "Spain",
-    "Sweden",
-    "Switzerland",
-    "Turkey",
-    "United States",
-    "Uruguay",
-]
-
-TOP_LEAGUES = [
-    "Premier League",
-    "La Liga",
-    "Serie A",
-    "Bundesliga",
-    "Ligue 1",
-    "Champions League",
-    "Europa League",
-    "Eredivisie",
-    "Primeira Liga",
-    "MLS",
-]
-ALL_LEAGUES = [
-    "2. Bundesliga",
-    "A-League",
-    "Allsvenskan",
-    "Belgian Pro League",
-    "Brasileirao",
-    "Bundesliga",
-    "Championship",
-    "Champions League",
-    "EFL League One",
-    "Eredivisie",
-    "Europa League",
-    "J1 League",
-    "La Liga",
-    "Liga MX",
-    "Ligue 1",
-    "MLS",
-    "Premier League",
-    "Primeira Liga",
-    "Saudi Pro League",
-    "Scottish Premiership",
-    "Serie A",
-    "Super Lig",
-    "Swiss Super League",
-]
-
+TOP_COUNTRIES = ["England","Spain","Italy","Germany","France"]
+ALL_COUNTRIES = sorted(["Argentina","Australia","Austria","Belgium","Brazil","Chile",
+    "Colombia","Croatia","Denmark","England","France","Germany","Greece","Italy",
+    "Japan","Mexico","Netherlands","Norway","Poland","Portugal","Saudi Arabia",
+    "Scotland","Spain","Sweden","Switzerland","Turkey","United States","Uruguay"])
+TOP_LEAGUES = ["Premier League","La Liga","Serie A","Bundesliga","Ligue 1",
+    "Champions League","Europa League","Eredivisie","Primeira Liga","MLS"]
+ALL_LEAGUES = sorted(["2. Bundesliga","A-League","Allsvenskan","Belgian Pro League",
+    "Brasileirao","Bundesliga","Championship","Champions League","EFL League One",
+    "Eredivisie","Europa League","J1 League","La Liga","Liga MX","Ligue 1","MLS",
+    "Premier League","Primeira Liga","Saudi Pro League","Scottish Premiership",
+    "Serie A","Super Lig","Swiss Super League"])
 COUNTRY_LEAGUES = {
-    "England": [
-        "Premier League",
-        "Championship",
-        "EFL League One",
-        "EFL League Two",
-        "FA Cup",
-        "EFL Cup",
-        "National League",
-    ],
-    "Germany": [
-        "Bundesliga",
-        "2. Bundesliga",
-        "3. Liga",
-        "DFB Pokal",
-        "Regionalliga",
-    ],
-    "Spain": [
-        "La Liga",
-        "Segunda Division",
-        "Copa del Rey",
-        "Primera Federacion",
-    ],
-    "Italy": [
-        "Serie A",
-        "Serie B",
-        "Serie C",
-        "Coppa Italia",
-    ],
-    "France": [
-        "Ligue 1",
-        "Ligue 2",
-        "Coupe de France",
-        "National",
-    ],
-    "United States": [
-        "MLS",
-        "USL Championship",
-        "US Open Cup",
-        "NWSL",
-    ],
+    "England":["Premier League","Championship","EFL League One","EFL League Two","FA Cup","EFL Cup"],
+    "Germany":["Bundesliga","2. Bundesliga","3. Liga","DFB Pokal"],
+    "Spain":["La Liga","Segunda Division","Copa del Rey"],
+    "Italy":["Serie A","Serie B","Coppa Italia"],
+    "France":["Ligue 1","Ligue 2","Coupe de France"],
+    "United States":["MLS","USL Championship"],
 }
-
-MAIN_TOURNAMENTS = [
-    "Premier League",
-    "Champions League",
-    "Europa League",
-    "FA Cup",
-    "Copa del Rey",
-    "Coppa Italia",
-    "DFB Pokal",
-    "Copa Libertadores",
-    "World Cup Qualifiers",
-]
-
-DATE_FILTERS = ["All", "Live", "Today", "Tomorrow", "This Week", "Weekend", "Upcoming"]
+MAIN_TOURNAMENTS = ["Premier League","Champions League","Europa League","FA Cup",
+    "Copa del Rey","Coppa Italia","DFB Pokal","Copa Libertadores"]
+DATE_FILTERS = ["All","Live","Today","Tomorrow","Upcoming"]
 
 
-def preferred_order(top_items, all_items):
-    ordered = ["All"]
-    seen = set(ordered)
-    for item in top_items:
-        if item not in seen:
-            ordered.append(item)
-            seen.add(item)
-    for item in sorted(all_items):
-        if item not in seen:
-            ordered.append(item)
-            seen.add(item)
-    return ordered
+def pref_order(top, all_):
+    seen = {"All"}
+    out  = ["All"] + [x for x in top if x not in seen and not seen.add(x)]
+    out += [x for x in sorted(all_) if x not in seen and not seen.add(x)]
+    return out
 
 
+# ──────────────────────────────────────────────
+# App
+# ──────────────────────────────────────────────
 class SoccerEdgeApp:
+
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("SOCCER EDGE ENGINE")
-        self.root.geometry("1500x780")
+        self.root.geometry("1500x800")
         self.root.minsize(1200, 680)
         self.root.configure(bg=BG)
 
-        self.engine = SoccerEdgeEngine()
-        self.current_match = MATCHES[0]
-        self.watchlist_ids = set()
-        self.tracker_job = None
-        self.tracker_running = False
-        self.tab_name = tk.StringVar(value="Stats Replay")
+        # Core
+        self.engine          = SoccerEdgeEngine()
+        self.current_match   = MATCHES[0]
+        self.live_api_active = False
+        self.watchlist_ids   = set()
 
+        # Tracker
+        self.tracker_running = False
+        self.tracker_job     = None
+
+        # Replay
+        self.replay_minute       = None
+        self.replay_running      = False
+        self.replay_job          = None
+        self.replay_start_minute = None
+        self.replay_slider       = None
+        self.replay_refresh      = None
+        self.replay_max_minute   = 0
+
+        # UI state
+        self.tab_name                   = tk.StringVar(value="Stats Replay")
+        self.quick_query                = tk.StringVar(value="")
+        self.chat_message               = tk.StringVar(value="")
+        self.guest_handle               = tk.StringVar(value="Guest001")
+        self.guest_market               = tk.StringVar(value="1X2")
+        self.guest_pick                 = tk.StringVar(value="")
+        self.selected_odds_book         = None
+        self.selected_prediction_source = None
+        self.selected_player_detail     = None
+        self.match_chats                = {}
+        self.match_chat_room            = {}
+        self.match_challenges           = {}
+        self.challenge_history          = []
+        self.center_split_initialized   = False
+
+        # Filters
         self.filters = {
-            "country": tk.StringVar(value="All"),
-            "league": tk.StringVar(value="All"),
+            "country":    tk.StringVar(value="All"),
+            "league":     tk.StringVar(value="All"),
             "tournament": tk.StringVar(value="All"),
-            "date": tk.StringVar(value="Today"),
+            "date":       tk.StringVar(value="All"),
         }
 
-        self.score_labels = {}
-        self.meta_labels = {}
-        self.watch_body = None
-        self.accuracy_body = None
-        self.odds_body = None
-        self.predictions_body = None
-        self.selected_odds_book = None
-        self.selected_prediction_source = None
-        self.selected_player_detail = None
-        self.replay_minute = None
-        self.replay_job = None
-        self.replay_running = False
-        self.replay_start_minute = None
-        self.replay_slider = None
-        self.replay_refresh = None
-        self.replay_max_minute = 0
-        self.quick_query = tk.StringVar(value="")
-        self.chat_message = tk.StringVar(value="")
-        self.guest_handle = tk.StringVar(value="Guest001")
-        self.guest_market = tk.StringVar(value="1X2")
-        self.guest_pick = tk.StringVar(value="")
-        self.match_chats = {}
-        self.match_chat_room = {}
-        self.match_challenges = {}
-        self.challenge_history = []
-        self.center_split = None
-        self.center_split_initialized = False
+        # Widget refs (populated in build_*)
+        self.status_label      = None
+        self.live_api_btn      = None
+        self.tracker_status    = None
+        self.matches_canvas    = None
+        self.matches_frame     = None
+        self.watchlist_canvas  = None
+        self.watchlist_frame   = None
+        self.watch_body        = None
+        self.center_split      = None
+        self.tab_content       = None
+        self.odds_body         = None
+        self.predictions_body  = None
         self.recommendation_body = None
-        self.quality_body = None
-        self.source_body = None
+        self.quality_body      = None
+        self.source_body       = None
         self.chat_preview_body = None
-        self.filter_combos = {}
-        self.matches_frame = None
-        self.matches_canvas = None
-        self.watchlist_frame = None
-        self.watchlist_canvas = None
-        self.status_label = None
-        self.tracker_status = None
+        self.accuracy_body     = None
+        self.sidebar_watch_body= None
+        self.score_labels      = {}
+        self.meta_labels       = {}
+        self.filter_combos     = {}
 
-        self.configure_styles()
-        self.build_ui()
-        self.challenge_history = self.seed_challenge_history()
+        # Live polling
+        self.poller     = LivePoller()
+        self.poll_queue = self.poller.queue
+
+        # Build UI instantly — no API calls
+        self._configure_styles()
+        self._build_ui()
+        self.challenge_history = self._seed_challenge_history()
+
+        # Populate UI with mock data (deferred so window draws first)
+        self.root.after(50,  self._initial_render)
+        self.root.after(300, self._process_poll_queue)
+
+    # ──────────────────────────────────────────
+    # Startup
+    # ──────────────────────────────────────────
+
+    def _initial_render(self):
+        """Called after window is visible — populates all panels."""
+        self.root.update_idletasks()
+        self.render_matches()
+        self.render_watchlist()
         self.select_match(self.current_match, refresh=False)
 
-    def configure_styles(self):
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure(
-            "Dark.TCombobox",
-            fieldbackground=PANEL_DARK,
-            background=PANEL_DARK,
-            foreground=TEXT,
-            arrowcolor=TEXT,
-            bordercolor=BORDER,
-            lightcolor=BORDER,
-            darkcolor=BORDER,
-            padding=3,
-        )
-        style.map(
-            "Dark.TCombobox",
+    # ──────────────────────────────────────────
+    # Live API polling
+    # ──────────────────────────────────────────
+
+    def _process_poll_queue(self):
+        try:
+            while True:
+                event_type, data = self.poll_queue.get_nowait()
+                if event_type == "live_matches":
+                    self._ingest_live(data)
+                elif event_type == "today_matches":
+                    self._ingest_today(data)
+                elif event_type == "error":
+                    if self.status_label:
+                        self.status_label.config(
+                            text=f"API: {str(data)[:70]}", fg=RED)
+        except queue.Empty:
+            pass
+        self.root.after(500, self._process_poll_queue)
+
+    def _ingest_live(self, api_matches):
+        if not api_matches:
+            return
+        global MATCHES
+        existing = {m["id"]: i for i, m in enumerate(MATCHES)}
+        for m in api_matches:
+            fid = m.get("fixture_id")
+            if not fid:
+                continue
+            st = m.get("status","")
+            gui_st = "LIVE" if st in ("1H","2H","HT","ET","P","LIVE") else st
+            if fid in existing:
+                idx = existing[fid]
+                MATCHES[idx].update({
+                    "status":     gui_st,
+                    "minute":     int(m.get("minute") or 0),
+                    "home_score": int(m.get("home_goals") or 0),
+                    "away_score": int(m.get("away_goals") or 0),
+                })
+            else:
+                entry = self._api_to_match(m, gui_st)
+                MATCHES.append(entry)
+                existing[fid] = len(MATCHES) - 1
+        live_n = sum(1 for x in MATCHES if x.get("status") == "LIVE")
+        if self.status_label:
+            self.status_label.config(
+                text=f"Last Load: live API  |  Matches: {len(MATCHES)}  |  Live: {live_n}",
+                fg=GREEN)
+        self.render_matches()
+
+    def _ingest_today(self, api_matches):
+        global MATCHES
+        existing = {m["id"] for m in MATCHES}
+        added = 0
+        for m in api_matches:
+            fid = m.get("fixture_id")
+            if not fid or fid in existing:
+                continue
+            MATCHES.append(self._api_to_match(m, "UP"))
+            existing.add(fid)
+            added += 1
+        if added:
+            self.render_matches()
+
+    def _api_to_match(self, m, gui_st):
+        return {
+            "id": m.get("fixture_id"), "country": m.get("country",""),
+            "league": m.get("league",""), "tournament": m.get("league",""),
+            "status": gui_st, "minute": int(m.get("minute") or 0),
+            "home": m["home"], "away": m["away"],
+            "home_score": int(m.get("home_goals") or 0),
+            "away_score": int(m.get("away_goals") or 0),
+            "edge": 0.0, "odds": (2.0,3.5,4.0), "pred": (33,33,34),
+            "date": m.get("date","")[:10], "venue": m.get("venue",""),
+            "referee": m.get("referee","") or "",
+            "home_form": ["?","?","?","?","?"],
+            "away_form": ["?","?","?","?","?"],
+            "home_avg": 1.5, "away_avg": 1.5,
+            "draw_price": 33.0, "under_price": 50.0, "over_price": 50.0,
+            "home_id": m.get("home_id"), "away_id": m.get("away_id"),
+            "fixture_id": m.get("fixture_id"),
+        }
+
+    def _fetch_today_bg(self):
+        try:
+            from live_data import fetch_matches_by_date, today_str
+            matches = fetch_matches_by_date(today_str())
+            if matches:
+                self.poll_queue.put(("today_matches", matches))
+        except Exception as e:
+            self.poll_queue.put(("error", f"today: {e}"))
+
+    def _run_live_analysis(self, match):
+        try:
+            from match_bridge import analyze_from_gui_match
+            result = analyze_from_gui_match(match)
+            if result:
+                self.root.after(0, lambda: self._apply_result(match, result))
+        except Exception as e:
+            print(f"[analysis] {e}")
+
+    def _apply_result(self, match, result):
+        if self.current_match["id"] != match["id"]:
+            return
+        match["edge"] = round(result.best_edge, 1)
+        hx, ax = result.probabilities.get("xg", (0.0, 0.0))
+        match["home_avg"] = round(hx, 2)
+        match["away_avg"] = round(ax, 2)
+        if "edge" in self.score_labels:
+            self.score_labels["edge"].config(
+                text=f"{result.best_edge:+.1f}",
+                fg=GREEN if result.best_edge >= 0 else RED)
+        self._render_right_panel()
+        if self.tracker_status:
+            self.tracker_status.config(
+                text=f"Live: {result.best_pick}  edge {result.best_edge:+.1f}  conf {int(result.confidence*100)}%",
+                fg=CYAN)
+
+    # ──────────────────────────────────────────
+    # Switch Live API
+    # ──────────────────────────────────────────
+
+    def switch_live_api(self):
+        if self.live_api_active:
+            self.poller.stop()
+            self.live_api_active = False
+            self.live_api_btn.config(text="Switch to Live API", bg="#5fa8d3", fg=TEXT)
+            self.status_label.config(text="Live API stopped.", fg=MUTED)
+            global MATCHES
+            MATCHES.clear()
+            MATCHES.extend(list(MOCK_MATCHES))
+            self.render_matches()
+        else:
+            self.status_label.config(text="Connecting to Live API…", fg=YELLOW)
+            self.live_api_btn.config(text="Connecting…", bg=YELLOW, fg=BG)
+            self.root.update_idletasks()
+            self.poller.start()
+            self.live_api_active = True
+            self.live_api_btn.config(text="Stop Live API  [LIVE]", bg=GREEN_DARK, fg=TEXT)
+            threading.Thread(target=self._fetch_today_bg, daemon=True).start()
+
+    # ──────────────────────────────────────────
+    # Styles
+    # ──────────────────────────────────────────
+
+    def _configure_styles(self):
+        s = ttk.Style()
+        s.theme_use("clam")
+        s.configure("D.TCombobox",
+            fieldbackground=PANEL_DARK, background=PANEL_DARK,
+            foreground=TEXT, arrowcolor=TEXT,
+            bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, padding=3)
+        s.map("D.TCombobox",
             fieldbackground=[("readonly", PANEL_DARK)],
-            foreground=[("readonly", TEXT)],
-        )
+            foreground=[("readonly", TEXT)])
 
-    def build_ui(self):
-        topbar = tk.Frame(self.root, bg=TOP, height=62)
-        topbar.pack(fill="x")
-        topbar.pack_propagate(False)
+    # ──────────────────────────────────────────
+    # UI skeleton (built once, fast)
+    # ──────────────────────────────────────────
 
-        tk.Label(
-            topbar,
-            text="SOCCER EDGE ENGINE",
-            bg=TOP,
-            fg="#7dd3fc",
-            font=("Consolas", 18, "bold"),
-            anchor="w",
-        ).pack(side="left", padx=8)
+    def _build_ui(self):
+        # ── Top bar ──
+        top = tk.Frame(self.root, bg=TOP, height=50)
+        top.pack(fill="x")
+        top.pack_propagate(False)
 
-        tk.Button(
-            topbar,
-            text="Test Speed",
-            bg="#334155",
-            fg=TEXT,
-            activebackground="#475569",
-            activeforeground=TEXT,
-            relief="flat",
-            font=FONT_SMALL,
-            padx=12,
-            command=self.test_speed,
-        ).pack(side="right", padx=14)
+        tk.Label(top, text="SOCCER EDGE ENGINE", bg=TOP, fg="#7dd3fc",
+            font=("Consolas",16,"bold"), anchor="w").pack(side="left", padx=10)
 
-        main = tk.Frame(self.root, bg=BG)
-        main.pack(fill="both", expand=True)
-        main.grid_columnconfigure(0, weight=35, uniform="dash")
-        main.grid_columnconfigure(1, weight=40, uniform="dash")
-        main.grid_columnconfigure(2, weight=25, uniform="dash")
-        main.grid_rowconfigure(0, weight=1)
+        # Screen nav buttons (right side of topbar)
+        nav = tk.Frame(top, bg=TOP)
+        nav.pack(side="right", padx=8)
 
-        left = tk.Frame(main, bg=BG)
-        center = tk.Frame(main, bg=BG)
-        right = tk.Frame(main, bg=BG)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        center.grid(row=0, column=1, sticky="nsew", padx=4)
-        right.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
+        tk.Button(top, text="Test Speed", bg="#334155", fg=TEXT,
+            activebackground="#475569", relief="flat", font=FS, padx=10,
+            command=self.test_speed).pack(side="right", padx=4)
 
-        self.build_left(left)
-        self.build_center(center)
-        self.build_right(right)
+        self._nav_scanner_btn = tk.Button(nav,
+            text="⚡ AI Market Scanner",
+            bg=PURPLE, fg=TEXT, activebackground="#7c3aed",
+            relief="flat", font=FB, padx=14, pady=6,
+            command=lambda: self._show_screen("scanner"))
+        self._nav_scanner_btn.pack(side="right", padx=(4,0))
 
-    def build_left(self, parent):
-        parent.grid_rowconfigure(3, weight=7)
-        parent.grid_rowconfigure(4, weight=3)
-        parent.grid_columnconfigure(0, weight=1)
+        self._nav_soccer_btn = tk.Button(nav,
+            text="⚽ Match Center",
+            bg=CYAN_DARK, fg=TEXT, activebackground="#0e7490",
+            relief="flat", font=FB, padx=14, pady=6,
+            command=lambda: self._show_screen("soccer"))
+        self._nav_soccer_btn.pack(side="right", padx=(4,0))
 
-        self.status_label = tk.Label(
-            parent,
-            text="Last Load: --  |  Matches: --",
-            bg=PANEL,
-            fg=MUTED,
-            font=FONT_MONO_SMALL,
-            anchor="w",
-            padx=8,
-        )
-        self.status_label.grid(row=0, column=0, sticky="ew", pady=(8, 6))
+        # Layout preset buttons (only visible on soccer screen)
+        sep = tk.Frame(nav, bg="#334155", width=1)
+        sep.pack(side="right", fill="y", padx=6, pady=6)
 
-        filters = tk.Frame(parent, bg=PANEL)
-        filters.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-        for col in range(4):
-            filters.grid_columnconfigure(col, weight=1)
+        tk.Label(nav, text="LAYOUT:", bg=TOP, fg=MUTED,
+            font=("Segoe UI", 8)).pack(side="right", padx=(0,4))
 
-        self.add_filter(filters, "COUNTRY", "country", preferred_order(TOP_COUNTRIES, ALL_COUNTRIES), height=18)
-        self.add_filter(filters, "LEAGUE", "league", self.league_options_for_country("All"), height=18)
-        self.add_filter(filters, "TOURNAMENT", "tournament", preferred_order(MAIN_TOURNAMENTS, MAIN_TOURNAMENTS), height=12)
-        self.add_filter(filters, "DATE", "date", DATE_FILTERS, height=8)
+        for label, preset, tip in [
+            ("⬜", "equal",        "Equal split"),
+            ("▣", "default",      "Default view"),
+            ("◧", "focus_left",   "Focus left panel"),
+            ("◫", "focus_center", "Focus center panel"),
+            ("◨", "focus_right",  "Focus right panel"),
+        ]:
+            tk.Button(nav, text=label, bg="#243244", fg=CYAN,
+                activebackground="#334155", relief="flat",
+                font=("Segoe UI", 11), padx=6, pady=2,
+                command=lambda p=preset: self._layout_preset(p)
+            ).pack(side="right", padx=1)
 
-        tk.Button(
-            parent,
-            text="Switch to Live API",
-            bg="#5fa8d3",
-            fg=TEXT,
-            activebackground="#72b8df",
-            activeforeground=TEXT,
-            relief="flat",
-            font=FONT_BOLD,
-            pady=5,
-            command=self.switch_live_api,
-        ).grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        tk.Button(nav, text="↺ Reset", bg="#243244", fg=MUTED,
+            activebackground="#334155", relief="flat",
+            font=("Segoe UI", 8), padx=6, pady=2,
+            command=self._reset_layout
+        ).pack(side="right", padx=(1,0))
 
-        matches_outer, matches_body = self.panel(parent, "MATCHES")
-        matches_outer.grid(row=3, column=0, sticky="nsew", pady=(0, 8))
-        matches_body.grid_rowconfigure(0, weight=1)
-        matches_body.grid_columnconfigure(0, weight=1)
-        self.create_matches_scroller(matches_body)
+        sep2 = tk.Frame(nav, bg="#334155", width=1)
+        sep2.pack(side="right", fill="y", padx=6, pady=6)
 
-        watch_outer, self.watch_body = self.panel(parent, "WATCHLIST")
-        watch_outer.grid(row=4, column=0, sticky="nsew", pady=(0, 10))
-        self.watch_body.grid_rowconfigure(0, weight=1)
-        self.watch_body.grid_columnconfigure(0, weight=1)
-        self.create_watchlist_scroller(self.watch_body)
-        self.render_watchlist()
-        self.render_matches()
+        # ── Screen container ──
+        self._screen_container = tk.Frame(self.root, bg=BG)
+        self._screen_container.pack(fill="both", expand=True)
+        self._screen_container.grid_rowconfigure(0, weight=1)
+        self._screen_container.grid_columnconfigure(0, weight=1)
 
-    def add_filter(self, parent, title, key, values, height=8):
-        index = len(parent.grid_slaves())
-        frame = tk.Frame(parent, bg=PANEL)
-        frame.grid(row=0, column=index, sticky="ew", padx=6, pady=6)
-        tk.Label(frame, text=title, bg=PANEL, fg=CYAN, font=FONT_SMALL, anchor="w").pack(fill="x")
-        combo = ttk.Combobox(
-            frame,
-            textvariable=self.filters[key],
-            values=values,
-            state="readonly",
-            style="Dark.TCombobox",
-            height=height,
-            font=FONT_SMALL,
-        )
-        combo.pack(fill="x", pady=(2, 0))
-        combo.bind("<<ComboboxSelected>>", lambda _event, item=key: self.on_filter_change(item))
-        self.filter_combos[key] = combo
+        # ── Soccer screen — fully resizable PanedWindow layout ──
+        self._soccer_frame = tk.Frame(self._screen_container, bg=BG)
+        self._soccer_frame.grid(row=0, column=0, sticky="nsew")
+        self._soccer_frame.grid_rowconfigure(0, weight=1)
+        self._soccer_frame.grid_columnconfigure(0, weight=1)
 
-    def on_filter_change(self, key):
-        if key == "country":
-            self.update_league_options()
-        self.render_matches()
-
-    def league_options_for_country(self, country):
-        if country == "All":
-            return preferred_order(TOP_LEAGUES, ALL_LEAGUES)
-        return ["All"] + COUNTRY_LEAGUES.get(country, [])
-
-    def update_league_options(self):
-        country = self.filters["country"].get()
-        values = self.league_options_for_country(country)
-        league_combo = self.filter_combos.get("league")
-        if league_combo is not None:
-            league_combo.configure(values=values)
-        if self.filters["league"].get() not in values:
-            self.filters["league"].set("All")
-
-    def create_matches_scroller(self, parent):
-        self.matches_canvas = tk.Canvas(parent, bg=PANEL_DARK, highlightthickness=0)
-        scrollbar = tk.Scrollbar(parent, orient="vertical", command=self.matches_canvas.yview)
-        self.matches_canvas.configure(yscrollcommand=scrollbar.set)
-        self.matches_canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
-
-        self.matches_frame = tk.Frame(self.matches_canvas, bg=PANEL_DARK)
-        window_id = self.matches_canvas.create_window((0, 0), window=self.matches_frame, anchor="nw")
-
-        def on_frame_configure(_event):
-            self.matches_canvas.configure(scrollregion=self.matches_canvas.bbox("all"))
-
-        def on_canvas_configure(event):
-            self.matches_canvas.itemconfigure(window_id, width=event.width)
-
-        self.matches_frame.bind("<Configure>", on_frame_configure)
-        self.matches_canvas.bind("<Configure>", on_canvas_configure)
-        self.matches_canvas.bind_all("<MouseWheel>", self.on_mousewheel)
-
-    def create_watchlist_scroller(self, parent):
-        self.watchlist_canvas = tk.Canvas(parent, bg=PANEL_DARK, highlightthickness=0)
-        scrollbar = tk.Scrollbar(parent, orient="vertical", command=self.watchlist_canvas.yview)
-        self.watchlist_canvas.configure(yscrollcommand=scrollbar.set)
-        self.watchlist_canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
-
-        self.watchlist_frame = tk.Frame(self.watchlist_canvas, bg=PANEL_DARK)
-        window_id = self.watchlist_canvas.create_window((0, 0), window=self.watchlist_frame, anchor="nw")
-
-        def on_frame_configure(_event):
-            self.watchlist_canvas.configure(scrollregion=self.watchlist_canvas.bbox("all"))
-
-        def on_canvas_configure(event):
-            self.watchlist_canvas.itemconfigure(window_id, width=event.width)
-
-        self.watchlist_frame.bind("<Configure>", on_frame_configure)
-        self.watchlist_canvas.bind("<Configure>", on_canvas_configure)
-
-    def build_center(self, parent):
-        parent.grid_rowconfigure(1, weight=1)
-        parent.grid_columnconfigure(0, weight=1)
-
-        tk.Label(
-            parent,
-            text="MATCH ANALYSIS",
-            bg=BG,
-            fg=CYAN,
-            font=FONT_BOLD,
-            anchor="w",
-        ).grid(row=0, column=0, sticky="ew", pady=(8, 6))
-
-        self.center_split = tk.PanedWindow(
-            parent,
-            orient="vertical",
-            bg=BG,
+        # Horizontal paned window — left | center | right (drag sashes to resize)
+        self._h_pane = tk.PanedWindow(
+            self._soccer_frame,
+            orient="horizontal",
+            bg="#22d3ee",
             sashwidth=8,
             sashrelief="raised",
-            showhandle=True,
             opaqueresize=True,
+            showhandle=True,
+            handlesize=12,
+            handlepad=100,
         )
-        self.center_split.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
-        self.center_split.bind("<Configure>", self.on_center_split_configure)
+        self._h_pane.grid(row=0, column=0, sticky="nsew")
 
-        top_wrap = tk.Frame(self.center_split, bg=BG)
-        bottom_wrap = tk.Frame(self.center_split, bg=BG)
-        self.center_split.add(top_wrap, minsize=360, stretch="always")
-        self.center_split.add(bottom_wrap, minsize=220, stretch="always")
+        left   = tk.Frame(self._h_pane, bg=BG)
+        center = tk.Frame(self._h_pane, bg=BG)
+        right  = tk.Frame(self._h_pane, bg=BG)
 
-        body = tk.Frame(top_wrap, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        self._h_pane.add(left,   minsize=220, sticky="nsew")
+        self._h_pane.add(center, minsize=380, sticky="nsew")
+        self._h_pane.add(right,  minsize=200, sticky="nsew")
+
+        self._build_left(left)
+        self._build_center(center)
+        self._build_right(right)
+
+        # Set initial sash positions after window fully draws
+        self.root.after(400, self._set_initial_sashes)
+
+        # ── Scanner screen (lazy — built on first visit) ──
+        self._scanner_frame = None
+        self._current_screen = "soccer"
+
+    def _set_right_sashes(self, pane):
+        """Set right panel sash positions proportionally."""
+        try:
+            h = pane.winfo_height()
+            if h <= 1:
+                self.root.after(100, lambda: self._set_right_sashes(pane))
+                return
+            # 6 sections: 28% decision, 16% quality, 10% watchlist,
+            #             16% chat, 16% source, 14% accuracy
+            positions = [0.28, 0.44, 0.54, 0.70, 0.86]
+            for i, frac in enumerate(positions):
+                try:
+                    pane.sash_place(i, 0, int(h * frac))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _set_initial_sashes(self):
+        """Set default panel widths after window is fully drawn."""
+        try:
+            self.root.update_idletasks()
+            w = self._h_pane.winfo_width()
+            if w <= 1:
+                self.root.after(150, self._set_initial_sashes)
+                return
+            # Left ~33%, Center ~42%, Right ~25%
+            self._h_pane.sash_place(0, int(w * 0.33), 0)
+            self._h_pane.sash_place(1, int(w * 0.75), 0)
+        except Exception as e:
+            print(f"[sash] {e}")
+            pass
+
+    def _reset_layout(self):
+        """Reset panels to default proportions — routes to correct screen."""
+        if self._current_screen == "scanner":
+            if self._scanner_frame is not None:
+                self._scanner_frame.apply_layout("default")
+        else:
+            self.root.after(50, self._set_initial_sashes)
+            if hasattr(self, "_rv_pane") and self._rv_pane:
+                self.root.after(100, lambda: self._set_right_sashes(self._rv_pane))
+
+    def _layout_preset(self, preset: str):
+        """Apply a layout preset — routes to correct screen handler."""
+        if self._current_screen == "scanner":
+            self._scanner_layout(preset)
+        else:
+            self._soccer_layout(preset)
+
+    def _scanner_layout(self, preset: str):
+        """Apply layout to AI Market Scanner screen."""
+        if self._scanner_frame is None:
+            return
+        self._scanner_frame.apply_layout(preset)
+
+    def _soccer_layout(self, preset: str):
+        """Apply layout to Match Center screen."""
+        try:
+            w = self._h_pane.winfo_width()
+            if w <= 1:
+                return
+            if preset == "focus_center":
+                self._h_pane.sash_place(0, int(w * 0.15), 0)
+                self._h_pane.sash_place(1, int(w * 0.85), 0)
+            elif preset == "focus_left":
+                self._h_pane.sash_place(0, int(w * 0.50), 0)
+                self._h_pane.sash_place(1, int(w * 0.78), 0)
+            elif preset == "focus_right":
+                self._h_pane.sash_place(0, int(w * 0.20), 0)
+                self._h_pane.sash_place(1, int(w * 0.52), 0)
+            elif preset == "equal":
+                self._h_pane.sash_place(0, int(w * 0.33), 0)
+                self._h_pane.sash_place(1, int(w * 0.66), 0)
+            elif preset == "default":
+                self.root.after(50, self._set_initial_sashes)
+            if hasattr(self, "_rv_pane") and self._rv_pane:
+                self.root.after(60, lambda: self._set_right_sashes(self._rv_pane))
+        except Exception as e:
+            print(f"[soccer layout] {e}")
+
+    def _show_screen(self, screen: str):
+        """Switch between 'soccer' and 'scanner' screens."""
+        if screen == self._current_screen:
+            return
+        self._current_screen = screen
+
+        if screen == "scanner":
+            self._soccer_frame.grid_remove()
+            if self._scanner_frame is None:
+                # Build scanner on first visit
+                from ai_market_scanner import AIMarketScannerFrame
+                self._scanner_frame = AIMarketScannerFrame(self._screen_container)
+                self._scanner_frame.grid(row=0, column=0, sticky="nsew")
+            else:
+                self._scanner_frame.grid()
+            # Update nav button styles
+            self._nav_scanner_btn.config(bg="#7c3aed")
+            self._nav_soccer_btn.config(bg=CYAN_DARK)
+
+        else:  # soccer
+            if self._scanner_frame is not None:
+                self._scanner_frame.grid_remove()
+            self._soccer_frame.grid()
+            self._nav_soccer_btn.config(bg="#0e7490")
+            self._nav_scanner_btn.config(bg=PURPLE)
+
+    # ── LEFT PANEL ────────────────────────────
+
+    def _build_left(self, p):
+        p.grid_rowconfigure(3, weight=7)
+        p.grid_rowconfigure(4, weight=3)
+        p.grid_columnconfigure(0, weight=1)
+
+        self.status_label = tk.Label(p,
+            text="Last Load: local mock  |  Matches: 8",
+            bg=PANEL, fg=MUTED, font=FM, anchor="w", padx=6)
+        self.status_label.grid(row=0, column=0, sticky="ew", pady=(6,4))
+
+        # Filters row
+        frow = tk.Frame(p, bg=PANEL)
+        frow.grid(row=1, column=0, sticky="ew", pady=(0,6))
+        for i in range(4):
+            frow.grid_columnconfigure(i, weight=1)
+        self._add_filter(frow,"COUNTRY","country",pref_order(TOP_COUNTRIES,ALL_COUNTRIES))
+        self._add_filter(frow,"LEAGUE","league",self._league_opts("All"))
+        self._add_filter(frow,"TOURNAMENT","tournament",pref_order(MAIN_TOURNAMENTS,MAIN_TOURNAMENTS))
+        self._add_filter(frow,"DATE","date",DATE_FILTERS)
+
+        self.live_api_btn = tk.Button(p, text="Switch to Live API",
+            bg="#5fa8d3", fg=TEXT, activebackground="#72b8df",
+            relief="flat", font=FB, pady=4, command=self.switch_live_api)
+        self.live_api_btn.grid(row=2, column=0, sticky="ew", pady=(0,6))
+
+        mo, mb = self._panel(p, "MATCHES")
+        mo.grid(row=3, column=0, sticky="nsew", pady=(0,6))
+        mb.grid_rowconfigure(0, weight=1)
+        mb.grid_columnconfigure(0, weight=1)
+        self._build_match_scroller(mb)
+
+        wo, self.watch_body = self._panel(p, "WATCHLIST")
+        wo.grid(row=4, column=0, sticky="nsew", pady=(0,6))
+        self.watch_body.grid_rowconfigure(0, weight=1)
+        self.watch_body.grid_columnconfigure(0, weight=1)
+        self._build_watchlist_scroller(self.watch_body)
+
+    def _add_filter(self, p, title, key, values):
+        idx = len(p.grid_slaves())
+        f = tk.Frame(p, bg=PANEL)
+        f.grid(row=0, column=idx, sticky="ew", padx=4, pady=4)
+        tk.Label(f, text=title, bg=PANEL, fg=CYAN, font=FS, anchor="w").pack(fill="x")
+        cb = ttk.Combobox(f, textvariable=self.filters[key],
+            values=values, state="readonly", style="D.TCombobox",
+            height=12, font=FS)
+        cb.pack(fill="x", pady=(1,0))
+        cb.bind("<<ComboboxSelected>>", lambda _e, k=key: self._on_filter(k))
+        self.filter_combos[key] = cb
+
+    def _on_filter(self, key):
+        if key == "country":
+            country = self.filters["country"].get()
+            vals = self._league_opts(country)
+            self.filter_combos["league"].configure(values=vals)
+            if self.filters["league"].get() not in vals:
+                self.filters["league"].set("All")
+        self.render_matches()
+
+    def _league_opts(self, country):
+        if country == "All":
+            return pref_order(TOP_LEAGUES, ALL_LEAGUES)
+        return ["All"] + COUNTRY_LEAGUES.get(country, [])
+
+    def _build_match_scroller(self, p):
+        self.matches_canvas = tk.Canvas(p, bg=PANEL_DARK, highlightthickness=0)
+        sb = tk.Scrollbar(p, orient="vertical", command=self.matches_canvas.yview)
+        self.matches_canvas.configure(yscrollcommand=sb.set)
+        self.matches_canvas.grid(row=0, column=0, sticky="nsew")
+        sb.grid(row=0, column=1, sticky="ns")
+        self.matches_frame = tk.Frame(self.matches_canvas, bg=PANEL_DARK)
+        wid = self.matches_canvas.create_window((0,0), window=self.matches_frame, anchor="nw")
+        self.matches_frame.bind("<Configure>",
+            lambda _e: self.matches_canvas.configure(scrollregion=self.matches_canvas.bbox("all")))
+        self.matches_canvas.bind("<Configure>",
+            lambda e: self.matches_canvas.itemconfigure(wid, width=e.width))
+        self.matches_canvas.bind_all("<MouseWheel>", self._mousewheel)
+
+    def _build_watchlist_scroller(self, p):
+        self.watchlist_canvas = tk.Canvas(p, bg=PANEL_DARK, highlightthickness=0)
+        sb = tk.Scrollbar(p, orient="vertical", command=self.watchlist_canvas.yview)
+        self.watchlist_canvas.configure(yscrollcommand=sb.set)
+        self.watchlist_canvas.grid(row=0, column=0, sticky="nsew")
+        sb.grid(row=0, column=1, sticky="ns")
+        self.watchlist_frame = tk.Frame(self.watchlist_canvas, bg=PANEL_DARK)
+        wid = self.watchlist_canvas.create_window((0,0), window=self.watchlist_frame, anchor="nw")
+        self.watchlist_frame.bind("<Configure>",
+            lambda _e: self.watchlist_canvas.configure(scrollregion=self.watchlist_canvas.bbox("all")))
+        self.watchlist_canvas.bind("<Configure>",
+            lambda e: self.watchlist_canvas.itemconfigure(wid, width=e.width))
+
+    # ── CENTER PANEL ──────────────────────────
+
+    def _build_center(self, p):
+        p.grid_rowconfigure(1, weight=1)
+        p.grid_columnconfigure(0, weight=1)
+
+        tk.Label(p, text="MATCH ANALYSIS", bg=BG, fg=CYAN,
+            font=FB, anchor="w").grid(row=0, column=0, sticky="ew", pady=(6,4))
+
+        self.center_split = tk.PanedWindow(p, orient="vertical",
+            bg="#22d3ee",
+            sashwidth=8,
+            sashrelief="raised",
+            opaqueresize=True,
+            showhandle=True,
+            handlesize=12,
+            handlepad=60)
+        self.center_split.grid(row=1, column=0, sticky="nsew", pady=(0,6))
+        self.center_split.bind("<Configure>", self._split_configure)
+
+        top_w    = tk.Frame(self.center_split, bg=BG)
+        bottom_w = tk.Frame(self.center_split, bg=BG)
+        self.center_split.add(top_w,    minsize=360, sticky="nsew")
+        self.center_split.add(bottom_w, minsize=180, sticky="nsew")
+
+        body = tk.Frame(top_w, bg=PANEL,
+            highlightbackground=BORDER, highlightthickness=1)
         body.pack(fill="both", expand=True)
         body.grid_columnconfigure(0, weight=1)
         body.grid_rowconfigure(3, weight=1)
 
-        self.build_scoreboard(body)
-        self.build_match_meta(body)
-        self.build_tabs(body)
+        self._build_scoreboard(body)
+        self._build_meta(body)
+        self._build_tabs(body)
 
         self.tab_content = tk.Frame(body, bg=PANEL)
-        self.tab_content.grid(row=3, column=0, sticky="nsew", padx=8)
+        self.tab_content.grid(row=3, column=0, sticky="nsew", padx=6)
 
-        self.build_action_bar(body)
-        self.build_market_sections(bottom_wrap)
-        self.render_tab()
-        self.render_market_sections()
+        self._build_action_bar(body)
+        self._build_markets(bottom_w)
 
-    def build_market_sections(self, parent):
-        market = tk.Frame(parent, bg=BG)
-        market.pack(fill="both", expand=True)
-        market.grid_columnconfigure(0, weight=1, uniform="market")
-        market.grid_columnconfigure(1, weight=1, uniform="market")
-        market.grid_rowconfigure(0, weight=1)
-
-        odds_outer, self.odds_body = self.panel(market, "ODDS BOARD")
-        odds_outer.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-
-        pred_outer, self.predictions_body = self.panel(market, "PREDICTION FEED")
-        pred_outer.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
-
-    def build_scoreboard(self, parent):
-        score = tk.Frame(parent, bg=PANEL)
-        score.grid(row=0, column=0, sticky="ew", padx=8, pady=(10, 8))
-        score.grid_columnconfigure(0, weight=1)
-        score.grid_columnconfigure(1, weight=0)
-        score.grid_columnconfigure(2, weight=1)
-
-        home_box = tk.Frame(score, bg=PANEL)
-        home_box.grid(row=0, column=0, sticky="nsew")
-        tk.Label(home_box, text="HOME", bg=PANEL, fg=CYAN, font=FONT_SMALL).pack()
-        self.score_labels["home_badge"] = tk.Label(
-            home_box,
-            text="",
-            bg="#facc15",
-            fg="#111827",
-            font=("Segoe UI", 12, "bold"),
-            width=4,
-            pady=5,
-        )
-        self.score_labels["home_badge"].pack(pady=(0, 4))
-        self.score_labels["home"] = tk.Label(home_box, text="", bg=PANEL, fg=TEXT, font=("Segoe UI", 12, "bold"))
-        self.score_labels["home"].pack()
-        self.score_labels["home_form"] = tk.Label(home_box, text="", bg=PANEL, fg=MUTED, font=FONT_SMALL)
-        self.score_labels["home_form"].pack()
-        self.score_labels["home_goals"] = tk.Label(home_box, text="", bg=PANEL, fg=MUTED, font=FONT_SMALL)
-        self.score_labels["home_goals"].pack()
-
-        center = tk.Frame(score, bg=PANEL)
-        center.grid(row=0, column=1, sticky="n", padx=50)
-        line = tk.Frame(center, bg=PANEL)
-        line.pack()
-        self.score_labels["home_score"] = tk.Label(line, text="0", bg=PANEL, fg=ORANGE, font=("Consolas", 22, "bold"))
-        self.score_labels["home_score"].pack(side="left", padx=8)
-        tk.Label(line, text="-", bg=PANEL, fg=ORANGE, font=("Consolas", 22, "bold")).pack(side="left")
-        self.score_labels["away_score"] = tk.Label(line, text="0", bg=PANEL, fg=ORANGE, font=("Consolas", 22, "bold"))
-        self.score_labels["away_score"].pack(side="left", padx=8)
-        self.score_labels["minute"] = tk.Label(center, text="00'", bg=PANEL, fg=CYAN, font=FONT_MONO_SMALL)
-        self.score_labels["minute"].pack()
-        self.score_labels["status"] = tk.Label(center, text="LIVE", bg=PANEL, fg=GREEN, font=FONT_SMALL)
-        self.score_labels["status"].pack()
-        self.score_labels["edge"] = tk.Label(center, text="+0.0", bg=PANEL_DARK, fg=TEXT, font=FONT_MONO_SMALL, padx=10, pady=3)
-        self.score_labels["edge"].pack(pady=(5, 0))
-        self.score_labels["replay_state"] = tk.Label(center, text="", bg=PANEL, fg=MUTED, font=FONT_SMALL)
-        self.score_labels["replay_state"].pack(pady=(4, 0))
-
-        away_box = tk.Frame(score, bg=PANEL)
-        away_box.grid(row=0, column=2, sticky="nsew")
-        tk.Label(away_box, text="AWAY", bg=PANEL, fg=RED, font=FONT_SMALL).pack()
-        self.score_labels["away_badge"] = tk.Label(
-            away_box,
-            text="",
-            bg="#ef4444",
-            fg=TEXT,
-            font=("Segoe UI", 12, "bold"),
-            width=4,
-            pady=5,
-        )
-        self.score_labels["away_badge"].pack(pady=(0, 4))
-        self.score_labels["away"] = tk.Label(away_box, text="", bg=PANEL, fg=TEXT, font=("Segoe UI", 12, "bold"))
-        self.score_labels["away"].pack()
-        self.score_labels["away_form"] = tk.Label(away_box, text="", bg=PANEL, fg=MUTED, font=FONT_SMALL)
-        self.score_labels["away_form"].pack()
-        self.score_labels["away_goals"] = tk.Label(away_box, text="", bg=PANEL, fg=MUTED, font=FONT_SMALL)
-        self.score_labels["away_goals"].pack()
-
-    def build_match_meta(self, parent):
-        meta = tk.Frame(parent, bg=PANEL_DARK)
-        meta.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
-        for col in range(3):
-            meta.grid_columnconfigure(col, weight=1)
-
-        self.meta_labels["date"] = self.meta_pair(meta, 0, "Date")
-        self.meta_labels["venue"] = self.meta_pair(meta, 1, "Venue")
-        self.meta_labels["referee"] = self.meta_pair(meta, 2, "Referee")
-
-    def meta_pair(self, parent, col, title):
-        frame = tk.Frame(parent, bg=PANEL_DARK)
-        frame.grid(row=0, column=col, sticky="ew", padx=8, pady=7)
-        tk.Label(frame, text=f"{title}:", bg=PANEL_DARK, fg=CYAN, font=FONT_SMALL, anchor="w").pack(side="left")
-        label = tk.Label(frame, text="", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w")
-        label.pack(side="left", padx=(4, 0))
-        return label
-
-    def build_tabs(self, parent):
-        tabs = tk.Frame(parent, bg=PANEL)
-        tabs.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
-        for idx, name in enumerate(self.center_tabs()):
-            tabs.grid_columnconfigure(idx, weight=1)
-            active = name == self.tab_name.get()
-            btn = tk.Button(
-                tabs,
-                text=name,
-                bg=BG if not active else PANEL_DARK,
-                fg=MUTED if not active else ORANGE,
-                activebackground=PANEL_DARK,
-                activeforeground=ORANGE,
-                relief="flat",
-                font=FONT_BOLD,
-                pady=6,
-                command=lambda value=name: self.set_tab(value),
-            )
-            btn.grid(row=0, column=idx, sticky="ew")
-
-    def center_tabs(self):
-        return ["Overview", "Stats Replay", "Attack", "Control", "Defense", "Line-ups", "Chat", "Table", "H2H"]
-
-    def on_center_split_configure(self, _event=None):
-        if self.center_split_initialized or self.center_split is None:
+    def _split_configure(self, _e=None):
+        if self.center_split_initialized:
             return
-        height = self.center_split.winfo_height()
-        if height <= 1:
+        h = self.center_split.winfo_height()
+        if h <= 1:
             return
-        self.center_split.sash_place(0, 0, int(height * 0.7))
+        self.center_split.sash_place(0, 0, int(h * 0.68))
         self.center_split_initialized = True
 
-    def rebuild_tabs(self):
-        parent = self.tab_content.master
-        for child in parent.grid_slaves(row=2):
-            child.destroy()
-        self.build_tabs(parent)
+    def _build_scoreboard(self, p):
+        sb = tk.Frame(p, bg=PANEL)
+        sb.grid(row=0, column=0, sticky="ew", padx=8, pady=(8,6))
+        sb.grid_columnconfigure(0, weight=1)
+        sb.grid_columnconfigure(2, weight=1)
 
-    def build_action_bar(self, parent):
-        actions = tk.Frame(parent, bg=BG)
-        actions.grid(row=4, column=0, sticky="ew", padx=8, pady=(8, 10))
-        actions.grid_columnconfigure(0, weight=1)
-        actions.grid_columnconfigure(1, weight=2)
-        actions.grid_columnconfigure(2, weight=1)
+        # Home
+        hb = tk.Frame(sb, bg=PANEL)
+        hb.grid(row=0, column=0, sticky="nsew")
+        tk.Label(hb, text="HOME", bg=PANEL, fg=CYAN, font=FS).pack()
+        self.score_labels["home_badge"] = tk.Label(hb, text="MC",
+            bg="#facc15", fg="#111827", font=("Segoe UI",11,"bold"), width=4, pady=4)
+        self.score_labels["home_badge"].pack(pady=(0,3))
+        self.score_labels["home"] = tk.Label(hb, text="", bg=PANEL, fg=TEXT,
+            font=("Segoe UI",11,"bold"))
+        self.score_labels["home"].pack()
+        self.score_labels["home_form"] = tk.Label(hb, text="", bg=PANEL, fg=MUTED, font=FS)
+        self.score_labels["home_form"].pack()
+        self.score_labels["home_goals"] = tk.Label(hb, text="", bg=PANEL, fg=MUTED, font=FS)
+        self.score_labels["home_goals"].pack()
 
-        left = tk.Frame(actions, bg=BG)
-        left.grid(row=0, column=0, sticky="w")
-        self.button(left, "+ Add Watchlist", PURPLE, self.add_current_to_watchlist).pack(side="left", padx=(0, 6))
-        self.button(left, "X Remove", GRAY_BTN, self.remove_current_from_watchlist).pack(side="left")
+        # Center score
+        sc = tk.Frame(sb, bg=PANEL)
+        sc.grid(row=0, column=1, sticky="n", padx=40)
+        line = tk.Frame(sc, bg=PANEL)
+        line.pack()
+        self.score_labels["home_score"] = tk.Label(line, text="0", bg=PANEL,
+            fg=ORANGE, font=("Consolas",20,"bold"))
+        self.score_labels["home_score"].pack(side="left", padx=6)
+        tk.Label(line, text="-", bg=PANEL, fg=ORANGE,
+            font=("Consolas",20,"bold")).pack(side="left")
+        self.score_labels["away_score"] = tk.Label(line, text="0", bg=PANEL,
+            fg=ORANGE, font=("Consolas",20,"bold"))
+        self.score_labels["away_score"].pack(side="left", padx=6)
+        self.score_labels["minute"] = tk.Label(sc, text="00'", bg=PANEL, fg=CYAN, font=FM)
+        self.score_labels["minute"].pack()
+        self.score_labels["status"] = tk.Label(sc, text="LIVE", bg=PANEL, fg=GREEN, font=FS)
+        self.score_labels["status"].pack()
+        self.score_labels["edge"] = tk.Label(sc, text="+0.0",
+            bg=PANEL_DARK, fg=TEXT, font=FM, padx=8, pady=2)
+        self.score_labels["edge"].pack(pady=(4,0))
+        self.score_labels["replay_state"] = tk.Label(sc, text="", bg=PANEL, fg=MUTED, font=FS)
+        self.score_labels["replay_state"].pack(pady=(3,0))
 
-        center = tk.Frame(actions, bg=BG)
-        center.grid(row=0, column=1, sticky="ew", padx=10)
-        center.grid_columnconfigure(0, weight=1)
-        ask_wrap = tk.Frame(center, bg="#243244", highlightbackground=BORDER, highlightthickness=1)
-        ask_wrap.grid(row=0, column=0, sticky="ew")
-        tk.Label(
-            ask_wrap,
-            text="Quick Find",
-            bg="#243244",
-            fg=CYAN,
-            font=FONT_BOLD,
-            padx=10,
-        ).pack(side="left")
-        entry = tk.Entry(
-            ask_wrap,
-            textvariable=self.quick_query,
-            bg="#0f172a",
-            fg=TEXT,
-            insertbackground=TEXT,
-            relief="flat",
-            font=FONT_SMALL,
-        )
-        entry.pack(side="left", fill="x", expand=True, padx=(0, 6), pady=7)
-        entry.bind("<Return>", lambda _event: self.quick_find())
-        self.button(ask_wrap, "Go", CYAN_DARK, self.quick_find, width=8, pady=7).pack(side="left", padx=(0, 6), pady=4)
-        self.button(ask_wrap, "Live", ORANGE, self.reset_replay_to_live, width=8, pady=7).pack(side="left", padx=(0, 6), pady=4)
-        tk.Label(
-            center,
-            text="Try: 35 minute shots, lineups, possession, table, h2h",
-            bg=BG,
-            fg=MUTED,
-            font=FONT_SMALL,
-            anchor="w",
-        ).grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        # Away
+        ab = tk.Frame(sb, bg=PANEL)
+        ab.grid(row=0, column=2, sticky="nsew")
+        tk.Label(ab, text="AWAY", bg=PANEL, fg=RED, font=FS).pack()
+        self.score_labels["away_badge"] = tk.Label(ab, text="LIV",
+            bg="#ef4444", fg=TEXT, font=("Segoe UI",11,"bold"), width=4, pady=4)
+        self.score_labels["away_badge"].pack(pady=(0,3))
+        self.score_labels["away"] = tk.Label(ab, text="", bg=PANEL, fg=TEXT,
+            font=("Segoe UI",11,"bold"))
+        self.score_labels["away"].pack()
+        self.score_labels["away_form"] = tk.Label(ab, text="", bg=PANEL, fg=MUTED, font=FS)
+        self.score_labels["away_form"].pack()
+        self.score_labels["away_goals"] = tk.Label(ab, text="", bg=PANEL, fg=MUTED, font=FS)
+        self.score_labels["away_goals"].pack()
 
-        right = tk.Frame(actions, bg=BG)
-        right.grid(row=0, column=2, sticky="e")
-        self.button(right, "Start Tracker", GREEN_DARK, self.start_tracker).pack(side="left", padx=(0, 6))
-        self.button(right, "Stop Tracker", GRAY_BTN, self.stop_tracker).pack(side="left")
+    def _build_meta(self, p):
+        meta = tk.Frame(p, bg=PANEL_DARK)
+        meta.grid(row=1, column=0, sticky="ew", padx=8, pady=(0,6))
+        for i in range(3):
+            meta.grid_columnconfigure(i, weight=1)
+        self.meta_labels["date"]    = self._meta_pair(meta, 0, "Date")
+        self.meta_labels["venue"]   = self._meta_pair(meta, 1, "Venue")
+        self.meta_labels["referee"] = self._meta_pair(meta, 2, "Referee")
 
-        self.tracker_status = tk.Label(parent, text="", bg=PANEL, fg=MUTED, font=FONT_SMALL, anchor="w")
-        self.tracker_status.grid(row=5, column=0, sticky="ew", padx=10, pady=(0, 8))
+    def _meta_pair(self, p, col, title):
+        f = tk.Frame(p, bg=PANEL_DARK)
+        f.grid(row=0, column=col, sticky="ew", padx=6, pady=5)
+        tk.Label(f, text=f"{title}:", bg=PANEL_DARK, fg=CYAN,
+            font=FS, anchor="w").pack(side="left")
+        lb = tk.Label(f, text="", bg=PANEL_DARK, fg=MUTED, font=FS, anchor="w")
+        lb.pack(side="left", padx=(3,0))
+        return lb
 
-    def build_right(self, parent):
-        parent.grid_columnconfigure(0, weight=1)
-        parent.grid_rowconfigure(0, weight=3)
-        parent.grid_rowconfigure(1, weight=2)
-        parent.grid_rowconfigure(2, weight=1)
-        parent.grid_rowconfigure(3, weight=2)
-        parent.grid_rowconfigure(4, weight=2)
-        parent.grid_rowconfigure(5, weight=2)
+    def _build_tabs(self, p):
+        self._tabs_frame = tk.Frame(p, bg=PANEL)
+        self._tabs_frame.grid(row=2, column=0, sticky="ew", padx=8, pady=(0,6))
+        self._redraw_tabs()
 
-        model_outer, self.recommendation_body = self.panel(parent, "DECISION ENGINE")
-        model_outer.grid(row=0, column=0, sticky="nsew", pady=(8, 8))
+    def _redraw_tabs(self):
+        for w in self._tabs_frame.winfo_children():
+            w.destroy()
+        tabs = ["Overview","Stats Replay","Attack","Control","Defense","Line-ups","Chat","Table","H2H"]
+        for i, name in enumerate(tabs):
+            self._tabs_frame.grid_columnconfigure(i, weight=1)
+            active = name == self.tab_name.get()
+            tk.Button(self._tabs_frame, text=name,
+                bg=PANEL_DARK if active else BG,
+                fg=ORANGE if active else MUTED,
+                activebackground=PANEL_DARK, activeforeground=ORANGE,
+                relief="flat", font=FB, pady=5,
+                command=lambda n=name: self.set_tab(n)
+            ).grid(row=0, column=i, sticky="ew")
 
-        team_outer, self.quality_body = self.panel(parent, "DATA QUALITY")
-        team_outer.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
+    def _build_action_bar(self, p):
+        bar = tk.Frame(p, bg=BG)
+        bar.grid(row=4, column=0, sticky="ew", padx=6, pady=(6,8))
+        bar.grid_columnconfigure(0, weight=1)
+        bar.grid_columnconfigure(1, weight=2)
+        bar.grid_columnconfigure(2, weight=1)
 
-        watch_outer, body = self.panel(parent, "WATCHLIST")
-        watch_outer.grid(row=2, column=0, sticky="nsew", pady=(0, 8))
-        self.sidebar_watch_body = body
+        lf = tk.Frame(bar, bg=BG)
+        lf.grid(row=0, column=0, sticky="w")
+        self._btn(lf, "+ Watch", PURPLE, self.add_to_watchlist).pack(side="left", padx=(0,4))
+        self._btn(lf, "Remove",  GRAY_BTN, self.remove_from_watchlist).pack(side="left")
 
-        chat_outer, self.chat_preview_body = self.panel(parent, "CHAT PREVIEW")
-        chat_outer.grid(row=3, column=0, sticky="nsew", pady=(0, 8))
+        cf = tk.Frame(bar, bg=BG)
+        cf.grid(row=0, column=1, sticky="ew", padx=8)
+        cf.grid_columnconfigure(0, weight=1)
+        qw = tk.Frame(cf, bg="#243244",
+            highlightbackground=BORDER, highlightthickness=1)
+        qw.grid(row=0, column=0, sticky="ew")
+        tk.Label(qw, text="Quick Find", bg="#243244", fg=CYAN,
+            font=FB, padx=8).pack(side="left")
+        qe = tk.Entry(qw, textvariable=self.quick_query,
+            bg=PANEL_DARK, fg=TEXT, insertbackground=TEXT,
+            relief="flat", font=FS)
+        qe.pack(side="left", fill="x", expand=True, padx=(0,4), pady=6)
+        qe.bind("<Return>", lambda _e: self.quick_find())
+        self._btn(qw,"Go",  CYAN_DARK, self.quick_find,       width=7, pady=6).pack(side="left", padx=(0,4), pady=3)
+        self._btn(qw,"Live",ORANGE,    self.reset_to_live,     width=7, pady=6).pack(side="left", padx=(0,4), pady=3)
+        tk.Label(cf, text="Try: shots, lineups, possession, h2h, table",
+            bg=BG, fg=MUTED, font=FS, anchor="w").grid(row=1, column=0, sticky="ew", pady=(2,0))
 
-        history_outer, self.source_body = self.panel(parent, "SOURCE MONITOR")
-        history_outer.grid(row=4, column=0, sticky="nsew", pady=(0, 8))
+        rf = tk.Frame(bar, bg=BG)
+        rf.grid(row=0, column=2, sticky="e")
+        self._btn(rf,"Start Tracker",GREEN_DARK,self.start_tracker).pack(side="left",padx=(0,4))
+        self._btn(rf,"Stop Tracker", GRAY_BTN,  self.stop_tracker).pack(side="left")
 
-        acc_outer, self.accuracy_body = self.panel(parent, "ACCURACY DASHBOARD")
-        acc_outer.grid(row=5, column=0, sticky="nsew", pady=(0, 10))
+        self.tracker_status = tk.Label(p, text="", bg=PANEL, fg=MUTED, font=FS, anchor="w")
+        self.tracker_status.grid(row=5, column=0, sticky="ew", padx=8, pady=(0,6))
 
-        self.render_decision_engine()
-        self.render_data_quality()
-        self.render_sidebar_watchlist()
-        self.render_chat_preview()
-        self.render_source_monitor()
-        self.render_accuracy()
+    def _build_markets(self, p):
+        mf = tk.Frame(p, bg=BG)
+        mf.pack(fill="both", expand=True)
+        mf.grid_columnconfigure(0, weight=1, uniform="m")
+        mf.grid_columnconfigure(1, weight=1, uniform="m")
+        mf.grid_rowconfigure(0, weight=1)
+        oo, self.odds_body        = self._panel(mf, "ODDS BOARD")
+        po, self.predictions_body = self._panel(mf, "PREDICTION FEED")
+        oo.grid(row=0, column=0, sticky="nsew", padx=(0,3))
+        po.grid(row=0, column=1, sticky="nsew", padx=(3,0))
 
-    def panel(self, parent, title):
-        outer = tk.Frame(parent, bg=BG, highlightbackground=BORDER, highlightthickness=1)
+    # ── RIGHT PANEL ───────────────────────────
+
+    def _build_right(self, p):
+        p.grid_columnconfigure(0, weight=1)
+        p.grid_rowconfigure(0, weight=1)
+
+        # Vertical PanedWindow for right panel — all sections resizable
+        rv = tk.PanedWindow(p, orient="vertical",
+            bg="#22d3ee",
+            sashwidth=8,
+            sashrelief="raised",
+            opaqueresize=True,
+            showhandle=True,
+            handlesize=12,
+            handlepad=40)
+        rv.grid(row=0, column=0, sticky="nsew")
+
+        def rp(title):
+            outer, body = self._panel(rv, title)
+            rv.add(outer, minsize=60, sticky="nsew")
+            return body
+
+        self.recommendation_body = rp("DECISION ENGINE")
+        self.quality_body        = rp("DATA QUALITY")
+        sbody_outer, sbody = self._panel(rv, "WATCHLIST")
+        rv.add(sbody_outer, minsize=50, sticky="nsew")
+        self.sidebar_watch_body  = sbody
+        self.chat_preview_body   = rp("CHAT PREVIEW")
+        self.source_body         = rp("SOURCE MONITOR")
+        self.accuracy_body       = rp("ACCURACY DASHBOARD")
+
+        # Set right panel initial sash positions after draw
+        self.root.after(300, lambda: self._set_right_sashes(rv))
+        self._rv_pane = rv
+
+    # ──────────────────────────────────────────
+    # Helpers
+    # ──────────────────────────────────────────
+
+    def _panel(self, p, title):
+        outer = tk.Frame(p, bg=BG,
+            highlightbackground=BORDER, highlightthickness=1)
         outer.grid_columnconfigure(0, weight=1)
         outer.grid_rowconfigure(1, weight=1)
-        tk.Label(
-            outer,
-            text=title,
-            bg=BG,
-            fg=CYAN,
-            font=FONT_BOLD,
-            anchor="w",
-            padx=8,
-            pady=5,
-        ).grid(row=0, column=0, sticky="ew")
+        tk.Label(outer, text=title, bg=BG, fg=CYAN,
+            font=FB, anchor="w", padx=6, pady=4).grid(row=0, column=0, sticky="ew")
         body = tk.Frame(outer, bg=PANEL)
-        body.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+        body.grid(row=1, column=0, sticky="nsew", padx=4, pady=(0,4))
         return outer, body
 
-    def button(self, parent, text, bg, command, width=None, pady=6):
-        return tk.Button(
-            parent,
-            text=text,
-            bg=bg,
-            fg=TEXT,
-            activebackground=bg,
-            activeforeground=TEXT,
-            relief="flat",
-            borderwidth=0,
-            font=FONT_BOLD,
-            padx=10,
-            pady=pady,
-            width=width,
-            command=command,
-        )
+    def _btn(self, p, text, bg, cmd, width=None, pady=5):
+        return tk.Button(p, text=text, bg=bg, fg=TEXT,
+            activebackground=bg, activeforeground=TEXT,
+            relief="flat", font=FB, padx=8, pady=pady,
+            width=width, command=cmd)
+
+    def _lbl(self, p, text, fg=None, font=None, **kw):
+        return tk.Label(p, text=text, bg=PANEL_DARK,
+            fg=fg or TEXT, font=font or FS, **kw)
+
+    def _card(self, p):
+        c = tk.Frame(p, bg=PANEL_DARK,
+            highlightbackground=BORDER, highlightthickness=1)
+        c.pack(fill="x", pady=3)
+        return c
+
+    def _sec(self, p, text):
+        tk.Label(p, text=text, bg=PANEL, fg=CYAN,
+            font=FB, anchor="w", pady=4).pack(fill="x")
+
+    def _clear(self, p):
+        for w in p.winfo_children():
+            w.destroy()
+
+    def _initials(self, name):
+        w = [x for x in str(name).replace("-"," ").split() if x]
+        if not w:    return "FC"
+        if len(w)==1: return w[0][:3].upper()
+        return "".join(x[0] for x in w[:3]).upper()
+
+    def _mousewheel(self, e):
+        w = self.root.focus_get()
+        if w and str(w).startswith(str(self.matches_canvas)):
+            self.matches_canvas.yview_scroll(int(-1*(e.delta/120)), "units")
+
+    def _tab_body(self):
+        c = tk.Canvas(self.tab_content, bg=PANEL, highlightthickness=0)
+        sb = tk.Scrollbar(self.tab_content, orient="vertical", command=c.yview)
+        c.configure(yscrollcommand=sb.set)
+        c.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        body = tk.Frame(c, bg=PANEL)
+        wid  = c.create_window((0,0), window=body, anchor="nw")
+        body.bind("<Configure>", lambda _e: c.configure(scrollregion=c.bbox("all")))
+        c.bind("<Configure>",    lambda e:  c.itemconfigure(wid, width=e.width))
+        return body
+
+    def _stat_bar(self, p, label, home, away):
+        row = tk.Frame(p, bg=PANEL)
+        row.pack(fill="x", pady=3)
+        top = tk.Frame(row, bg=PANEL)
+        top.pack(fill="x")
+        tk.Label(top, text=str(home), bg=PANEL, fg=TEXT, font=FB, width=7, anchor="w").pack(side="left")
+        tk.Label(top, text=label,     bg=PANEL, fg=MUTED, font=FS).pack(side="left", fill="x", expand=True)
+        tk.Label(top, text=str(away), bg=PANEL, fg=TEXT, font=FB, width=7, anchor="e").pack(side="right")
+        bar = tk.Frame(row, bg="#263244", height=7)
+        bar.pack(fill="x", pady=(1,0))
+        total = max(float(home)+float(away), 1.0)
+        lw = max(int(float(home)/total*100), 1)
+        bar.grid_columnconfigure(0, weight=lw)
+        bar.grid_columnconfigure(1, weight=max(100-lw,1))
+        tk.Frame(bar, bg="#38bdf8", height=7).grid(row=0, column=0, sticky="ew")
+        tk.Frame(bar, bg=ORANGE,    height=7).grid(row=0, column=1, sticky="ew")
+
+    def _summary_row(self, p, summaries):
+        card = tk.Frame(p, bg=PANEL_DARK,
+            highlightbackground=BORDER, highlightthickness=1)
+        card.pack(fill="x", pady=(0,6))
+        row = tk.Frame(card, bg=PANEL_DARK)
+        row.pack(fill="x", padx=8, pady=6)
+        for label, hp, ap in summaries:
+            box = tk.Frame(row, bg="#243244")
+            box.pack(side="left", expand=True, fill="x", padx=2)
+            tk.Label(box, text=label,          bg="#243244", fg=MUTED, font=FS).pack(pady=(5,1))
+            tk.Label(box, text=f"{hp}% / {ap}%",bg="#243244",fg=TEXT, font=FB).pack(pady=(0,1))
+            strip = tk.Frame(box, bg="#1a2435", height=5)
+            strip.pack(fill="x", padx=8, pady=(1,6))
+            lw = max(1, int(hp)); rw = max(1, int(ap))
+            strip.grid_columnconfigure(0, weight=lw)
+            strip.grid_columnconfigure(1, weight=rw)
+            tk.Frame(strip, bg=CYAN,   height=5).grid(row=0, column=0, sticky="ew")
+            tk.Frame(strip, bg=ORANGE, height=5).grid(row=0, column=1, sticky="ew")
+        return card
+
+    # ──────────────────────────────────────────
+    # Match list rendering  (FAST)
+    # ──────────────────────────────────────────
 
     def filtered_matches(self):
         country = self.filters["country"].get()
-        league = self.filters["league"].get()
-        tournament = self.filters["tournament"].get()
-        date_filter = self.filters["date"].get()
-        items = []
-        for match in MATCHES:
-            if country != "All" and match["country"] != country:
-                continue
-            if league != "All" and match["league"] != league:
-                continue
-            if tournament != "All" and match["tournament"] != tournament:
-                continue
-            if date_filter == "Live" and match["status"] != "LIVE":
-                continue
-            if date_filter == "Upcoming" and match["status"] == "LIVE":
-                continue
-            items.append(match)
-        return items
+        league  = self.filters["league"].get()
+        tourn   = self.filters["tournament"].get()
+        date_f  = self.filters["date"].get()
+        result  = []
+        for m in MATCHES:
+            if country != "All" and m.get("country","") != country: continue
+            if league  != "All" and m.get("league","")  != league:  continue
+            if tourn   != "All" and m.get("tournament","") != tourn: continue
+            st = m.get("status","")
+            if date_f == "Live"     and st not in ("LIVE","1H","2H","HT","ET","P"): continue
+            if date_f == "Upcoming" and st in ("LIVE","1H","2H","HT","ET","P"):     continue
+            result.append(m)
+        return result
 
     def render_matches(self):
-        for child in self.matches_frame.winfo_children():
-            child.destroy()
-
+        self._clear(self.matches_frame)
         matches = self.filtered_matches()
-        self.status_label.config(text=f"Last Load: local mock  |  Matches: {len(matches)}")
-
-        grouped = {}
-        for match in matches:
-            grouped.setdefault(match["league"], []).append(match)
+        src = "live API" if self.live_api_active else "local mock"
+        live_n = sum(1 for m in matches if m.get("status")=="LIVE")
+        self.status_label.config(
+            text=f"Last Load: {src}  |  Matches: {len(matches)}  |  Live: {live_n}")
 
         if not matches:
-            tk.Label(
-                self.matches_frame,
-                text="No matches for selected filters.",
-                bg=PANEL_DARK,
-                fg=MUTED,
-                font=FONT_MONO,
-                pady=20,
-            ).pack(fill="x")
+            tk.Label(self.matches_frame, text="No matches for selected filters.",
+                bg=PANEL_DARK, fg=MUTED, font=FM, pady=12).pack(fill="x")
             return
 
-        for league, league_matches in grouped.items():
-            tk.Label(
-                self.matches_frame,
-                text=f"--- {league.upper()} ---",
-                bg="#111827",
-                fg=TEXT,
-                font=FONT_MONO_SMALL,
-                pady=3,
-            ).pack(fill="x", padx=4, pady=(4, 1))
-            for match in league_matches:
-                self.match_row(self.matches_frame, match)
+        grouped = {}
+        for m in matches:
+            grouped.setdefault(m.get("league","?"), []).append(m)
 
-    def match_row(self, parent, match):
-        self.compact_match_row(parent, match, selected=self.current_match and match["id"] == self.current_match["id"])
+        for league, ms in grouped.items():
+            tk.Label(self.matches_frame, text=f"─── {league.upper()} ───",
+                bg="#111827", fg=MUTED, font=FM, pady=2, anchor="w", padx=4).pack(fill="x", pady=(3,1))
+            for m in ms:
+                self._match_row(m)
 
-    def compact_match_row(self, parent, match, selected=False):
-        selected = self.current_match and match["id"] == self.current_match["id"]
-        row_bg = "#1f2937" if selected else ROW
-        row = tk.Frame(parent, bg=row_bg, height=32)
-        row.pack(fill="x", padx=4, pady=1)
-        row.grid_columnconfigure(2, weight=1)
-        row.grid_columnconfigure(4, weight=1)
+    def _match_row(self, m):
+        selected = self.current_match and m["id"] == self.current_match["id"]
+        bg = "#1f2937" if selected else ROW
+        row = tk.Frame(self.matches_frame, bg=bg)
+        row.pack(fill="x", padx=3, pady=1)
 
-        status_color = GREEN if match["status"] == "LIVE" else YELLOW
-        edge_color = GREEN if match["edge"] >= 0 else RED
-        score = f"{match['home_score']}-{match['away_score']}"
-        odds = f"{match['odds'][0]:.1f}/{match['odds'][1]:.1f}/{match['odds'][2]:.1f}"
-        pred = f"{match['pred'][0]:>2}/{match['pred'][1]:>2}/{match['pred'][2]:>2}"
-        is_starred = match["id"] in self.watchlist_ids
-        star = "★" if is_starred else "☆"
+        st    = m.get("status","")
+        sc    = GREEN if st=="LIVE" else YELLOW
+        ec    = GREEN if m.get("edge",0)>=0 else RED
+        score = f"{m.get('home_score',0)}-{m.get('away_score',0)}"
+        odds  = m.get("odds",(2.0,3.5,4.0))
+        star  = "★" if m["id"] in self.watchlist_ids else "☆"
 
-        values = [
-            (match["status"], 0, 4, status_color, "w"),
-            (str(match["minute"]) if match["minute"] else "--", 1, 4, "#60a5fa", "center"),
-            (match["home"], 2, 13, TEXT, "e"),
-            (score, 3, 5, ORANGE, "center"),
-            (match["away"], 4, 13, TEXT, "w"),
-            (f"{match['edge']:+.1f}", 5, 6, edge_color, "center"),
-            (odds, 6, 13, MUTED, "center"),
-            (pred, 7, 9, MUTED, "center"),
+        cols = [
+            (st[:4],        4,  sc,   "w"),
+            (str(m.get("minute","")) if m.get("minute") else "--", 3, "#60a5fa","c"),
+            (m.get("home",""), 12, TEXT, "e"),
+            (score,         5,  ORANGE,"c"),
+            (m.get("away",""), 12, TEXT, "w"),
+            (f"{m.get('edge',0):+.1f}", 6, ec,  "c"),
+            (f"{odds[0]:.1f}/{odds[1]:.1f}/{odds[2]:.1f}", 13, MUTED, "c"),
         ]
-        for text, col, width, color, anchor in values:
-            label = tk.Label(row, text=text, bg=row_bg, fg=color, font=FONT_MONO_SMALL, width=width, anchor=anchor)
-            label.grid(row=0, column=col, sticky="ew", padx=1, pady=5)
-            label.bind("<Button-1>", lambda _event, item=match: self.select_match(item))
+        for i, (txt, w, c, a) in enumerate(cols):
+            lb = tk.Label(row, text=txt, bg=bg, fg=c,
+                font=FM, width=w, anchor=a)
+            lb.grid(row=0, column=i, sticky="ew", padx=1, pady=4)
+            lb.bind("<Button-1>", lambda _e, item=m: self.select_match(item))
 
-        star_btn = tk.Button(
-            row,
-            text=star,
-            bg=row_bg,
-            fg=YELLOW if is_starred else MUTED,
-            activebackground=row_bg,
-            activeforeground=YELLOW,
-            relief="flat",
-            width=2,
-            font=("Segoe UI Symbol", 11, "bold"),
-            command=lambda item=match: self.toggle_watchlist(item),
-        )
-        star_btn.grid(row=0, column=8, padx=(2, 5))
-        row.bind("<Button-1>", lambda _event, item=match: self.select_match(item))
+        tk.Button(row, text=star, bg=bg,
+            fg=YELLOW if m["id"] in self.watchlist_ids else MUTED,
+            activebackground=bg, relief="flat", width=2, font=("Segoe UI Symbol",10),
+            command=lambda item=m: self._toggle_watchlist(item)
+        ).grid(row=0, column=len(cols), padx=(1,4))
+        row.bind("<Button-1>", lambda _e, item=m: self.select_match(item))
+
+    def render_watchlist(self):
+        self._clear(self.watchlist_frame)
+        items = [m for m in MATCHES if m["id"] in self.watchlist_ids]
+        if not items:
+            tk.Label(self.watchlist_frame,
+                text="No matches. Click ☆ to add.",
+                bg=PANEL_DARK, fg=MUTED, font=FM, pady=6).pack(fill="x", padx=4)
+            return
+        for m in items:
+            self._match_row(m)
+        self.watchlist_canvas.configure(scrollregion=self.watchlist_canvas.bbox("all"))
+
+    def _toggle_watchlist(self, m):
+        if m["id"] in self.watchlist_ids:
+            self.watchlist_ids.remove(m["id"])
+        else:
+            self.watchlist_ids.add(m["id"])
+        self.render_matches()
+        self.render_watchlist()
+        self._render_sidebar_watchlist()
+
+    # ──────────────────────────────────────────
+    # Match selection
+    # ──────────────────────────────────────────
 
     def select_match(self, match, refresh=True):
-        self.stop_replay(reset_to_current=False)
+        self._stop_replay(reset=False)
         self.current_match = match
-        if self.match_finished(match):
-            self.settle_match_challenges(match)
+        if self._match_finished(match):
+            self._settle_challenges(match)
         self.selected_odds_book = None
         self.selected_prediction_source = None
         self.selected_player_detail = None
-        self.replay_minute = self.stats_reference_minute(match)
-        self.score_labels["home_badge"].config(text=self.team_initials(match["home"]))
-        self.score_labels["away_badge"].config(text=self.team_initials(match["away"]))
-        self.score_labels["home"].config(text=match["home"])
-        self.score_labels["away"].config(text=match["away"])
-        self.score_labels["home_score"].config(text=str(match["home_score"]))
-        self.score_labels["away_score"].config(text=str(match["away_score"]))
-        self.score_labels["minute"].config(text=f"{match['minute']:02d}'")
-        self.score_labels["status"].config(text=match["status"], fg=GREEN if match["status"] == "LIVE" else YELLOW)
-        self.score_labels["edge"].config(text=f"{match['edge']:+.1f}", fg=GREEN if match["edge"] >= 0 else RED)
-        self.score_labels["home_form"].config(text="Form: " + "-".join(match["home_form"]))
-        self.score_labels["away_form"].config(text="Form: " + "-".join(match["away_form"]))
-        self.score_labels["home_goals"].config(text=f"Goals: {match['home_avg']}/game")
-        self.score_labels["away_goals"].config(text=f"Goals: {match['away_avg']}/game")
+        self.replay_minute = self._ref_minute(match)
 
-        self.meta_labels["date"].config(text=match["date"])
-        self.meta_labels["venue"].config(text=match["venue"])
-        self.meta_labels["referee"].config(text=match["referee"])
-        self.update_replay_header()
-        self.render_tab()
-        self.render_decision_engine()
-        self.render_data_quality()
-        self.render_chat_preview()
-        self.render_source_monitor()
-        self.render_market_sections()
-        self.render_accuracy()
+        sl = self.score_labels
+        sl["home_badge"].config(text=self._initials(match.get("home","")))
+        sl["away_badge"].config(text=self._initials(match.get("away","")))
+        sl["home"].config(text=match.get("home",""))
+        sl["away"].config(text=match.get("away",""))
+        sl["home_score"].config(text=str(match.get("home_score",0)))
+        sl["away_score"].config(text=str(match.get("away_score",0)))
+        sl["minute"].config(text=f"{match.get('minute',0):02d}'")
+        st = match.get("status","UP")
+        sl["status"].config(text=st, fg=GREEN if st=="LIVE" else YELLOW)
+        edge = match.get("edge",0.0)
+        sl["edge"].config(text=f"{edge:+.1f}", fg=GREEN if edge>=0 else RED)
+        sl["home_form"].config(text="Form: "+"-".join(match.get("home_form",["?","?","?","?","?"])))
+        sl["away_form"].config(text="Form: "+"-".join(match.get("away_form",["?","?","?","?","?"])))
+        sl["home_goals"].config(text=f"Goals: {match.get('home_avg',0)}/game")
+        sl["away_goals"].config(text=f"Goals: {match.get('away_avg',0)}/game")
+        self.meta_labels["date"].config(   text=match.get("date",""))
+        self.meta_labels["venue"].config(  text=match.get("venue",""))
+        self.meta_labels["referee"].config(text=match.get("referee",""))
+
+        self._update_replay_header()
+        self._render_tab()
+        self._render_right_panel()
+        self._render_markets()
         if refresh:
             self.render_matches()
 
-    def team_initials(self, team):
-        words = [part for part in team.replace("-", " ").split() if part]
-        if not words:
-            return "FC"
-        if len(words) == 1:
-            return words[0][:3].upper()
-        return "".join(word[0] for word in words[:3]).upper()
+        if match.get("fixture_id") and match.get("home_id") and self.live_api_active:
+            threading.Thread(target=self._run_live_analysis,
+                args=(match,), daemon=True).start()
+
+    # ──────────────────────────────────────────
+    # Right panel  (lazy — only when visible)
+    # ──────────────────────────────────────────
+
+    def _render_right_panel(self):
+        self._render_decision_engine()
+        self._render_data_quality()
+        self._render_source_monitor()
+        self._render_chat_preview()
+        self._render_sidebar_watchlist()
+        self._render_accuracy()
+
+    def _render_decision_engine(self):
+        self._clear(self.recommendation_body)
+        snap = self._snapshot(self.current_match)
+        p    = self.recommendation_body
+
+        top = self._card(p)
+        tk.Label(top, text=snap["decision"], bg=PANEL_DARK,
+            fg=snap["decision_color"], font=("Segoe UI",14,"bold"), anchor="w"
+        ).pack(fill="x", padx=8, pady=(6,1))
+        tk.Label(top, text=snap["market"], bg=PANEL_DARK, fg=TEXT,
+            font=FB, anchor="w").pack(fill="x", padx=8)
+        tk.Label(top,
+            text=f"Confidence {snap['confidence']}%  |  Edge {snap['edge']:+.1f}  |  Quality {snap['data_quality']}%",
+            bg=PANEL_DARK, fg=MUTED, font=FS, anchor="w").pack(fill="x", padx=8, pady=(0,6))
+
+        bands = tk.Frame(top, bg=PANEL_DARK)
+        bands.pack(fill="x", padx=8, pady=(0,8))
+        for lbl, val, col in [
+            ("True Prob",      f"{snap['true_prob']}%",   CYAN),
+            ("Market Implied", f"{snap['market_prob']}%", ORANGE),
+            ("Discrepancy",    f"{snap['edge']:+.1f}",    snap["decision_color"]),
+        ]:
+            box = tk.Frame(bands, bg="#243244")
+            box.pack(side="left", expand=True, fill="x", padx=2)
+            tk.Label(box, text=lbl, bg="#243244", fg=MUTED, font=FS).pack(pady=(5,1))
+            tk.Label(box, text=val, bg="#243244", fg=col,  font=FB).pack(pady=(0,5))
+
+        self._sec(p, "WHY IT LIKES IT")
+        c = self._card(p)
+        for r in snap["reasons_for"]:
+            tk.Label(c, text=f"+ {r}", bg=PANEL_DARK, fg=GREEN,
+                font=FS, anchor="w", justify="left", wraplength=260
+            ).pack(fill="x", padx=8, pady=1)
+
+        self._sec(p, "WHY IT CAN FAIL")
+        c2 = self._card(p)
+        for r in snap["reasons_against"]:
+            tk.Label(c2, text=f"- {r}", bg=PANEL_DARK, fg=RED,
+                font=FS, anchor="w", justify="left", wraplength=260
+            ).pack(fill="x", padx=8, pady=1)
+
+    def _render_data_quality(self):
+        self._clear(self.quality_body)
+        snap = self._snapshot(self.current_match)
+        p    = self.quality_body
+
+        row = tk.Frame(p, bg=PANEL)
+        row.pack(fill="x", padx=4, pady=4)
+        for lbl, val, col in [
+            ("Freshness", snap["freshness"],   CYAN),
+            ("Lineups",   snap["lineups"],     snap["lineup_color"]),
+            ("Weather",   snap["weather"],     ORANGE),
+            ("News",      snap["news_status"], TEXT),
+        ]:
+            box = tk.Frame(row, bg="#243244")
+            box.pack(side="left", expand=True, fill="x", padx=2)
+            tk.Label(box, text=lbl, bg="#243244", fg=MUTED, font=FS).pack(pady=(4,1))
+            tk.Label(box, text=val, bg="#243244", fg=col,  font=FB).pack(pady=(0,4))
+
+        self._sec(p, "DATA BUCKETS")
+        c = self._card(p)
+        for lbl, val in snap["data_buckets"]:
+            line = tk.Frame(c, bg=PANEL_DARK)
+            line.pack(fill="x", padx=6, pady=1)
+            tk.Label(line, text=lbl, bg=PANEL_DARK, fg=CYAN,
+                font=FS, width=13, anchor="w").pack(side="left")
+            tk.Label(line, text=val, bg=PANEL_DARK, fg=TEXT,
+                font=FS, anchor="w").pack(side="left")
+
+    def _render_source_monitor(self):
+        self._clear(self.source_body)
+        snap = self._snapshot(self.current_match)
+        p    = self.source_body
+
+        hdr = tk.Frame(p, bg=PANEL_DARK)
+        hdr.pack(fill="x", padx=4, pady=(4,1))
+        for txt, w in [("SOURCE",13),("TYPE",9),("STATE",11),("WEIGHT",7)]:
+            tk.Label(hdr, text=txt, bg=PANEL_DARK, fg=ORANGE,
+                font=FM, width=w, anchor="w").pack(side="left")
+
+        for src, kind, state, weight in snap["sources"]:
+            row = tk.Frame(p, bg=ROW)
+            row.pack(fill="x", padx=4, pady=1)
+            sc = GREEN if state in ("Confirmed","Live","Fresh") else YELLOW if state in ("Partial","Checking") else RED
+            for txt, w, c in [(src,13,TEXT),(kind,9,MUTED),(state,11,sc),(weight,7,CYAN)]:
+                tk.Label(row, text=txt, bg=ROW, fg=c,
+                    font=FM, width=w, anchor="w").pack(side="left", pady=3)
+
+    def _render_chat_preview(self):
+        self._clear(self.chat_preview_body)
+        m      = self.current_match
+        room   = self._active_room(m)
+        thread = self._chat_thread(m)
+        p      = self.chat_preview_body
+
+        hdr = tk.Frame(p, bg=PANEL_DARK)
+        hdr.pack(fill="x", padx=6, pady=(6,4))
+        tk.Label(hdr, text=f"{m.get('home','')} vs {m.get('away','')}",
+            bg=PANEL_DARK, fg=TEXT, font=FB, anchor="w").pack(fill="x")
+        tk.Label(hdr, text=room, bg=PANEL_DARK, fg=CYAN, font=FS, anchor="w").pack(fill="x")
+
+        for item in thread[-3:]:
+            row = tk.Frame(p, bg=PANEL_DARK)
+            row.pack(fill="x", padx=6, pady=2)
+            col = ORANGE if item["tag"]=="agent" else GREEN if item["tag"]=="you" else CYAN
+            tk.Label(row, text=item["author"], bg=PANEL_DARK, fg=col,
+                font=FS, width=10, anchor="w").pack(side="left")
+            tk.Label(row,
+                text=item["text"][:50]+("…" if len(item["text"])>50 else ""),
+                bg=PANEL_DARK, fg=MUTED, font=FS, anchor="w"
+            ).pack(side="left", fill="x", expand=True)
+
+    def _render_sidebar_watchlist(self):
+        self._clear(self.sidebar_watch_body)
+        items = [m for m in MATCHES if m["id"] in self.watchlist_ids]
+        msg = "No matches in watchlist." if not items else \
+              "\n".join(f"{m.get('home','')} vs {m.get('away','')}" for m in items[:4])
+        tk.Label(self.sidebar_watch_body, text=msg, bg=PANEL_DARK, fg=MUTED,
+            font=FM, anchor="w", justify="left", padx=8, pady=8).pack(fill="both", expand=True)
+
+    def _render_accuracy(self):
+        self._clear(self.accuracy_body)
+        p = self.accuracy_body
+        try:
+            s = summarize_accuracy()
+            rows = [
+                ("Settled", s.get("total_settled",0)),
+                ("Rec hit %", s.get("recommended_hit_rate",0.0)),
+                ("Draw hit %", s.get("draw_hit_rate",0.0)),
+                ("Under hit %", s.get("under_hit_rate",0.0)),
+            ]
+        except Exception:
+            rows = [("Settled",0),("Rec hit %",0),("Draw hit %",0),("Under hit %",0)]
+
+        tk.Label(p, text="ACCURACY SUMMARY", bg=PANEL, fg=ORANGE,
+            font=FM, anchor="w").pack(fill="x", padx=6, pady=(6,2))
+        for lbl, val in rows:
+            row = tk.Frame(p, bg=PANEL)
+            row.pack(fill="x", padx=6, pady=1)
+            tk.Label(row, text=f"{lbl}:", bg=PANEL, fg=MUTED,
+                font=FM, width=20, anchor="w").pack(side="left")
+            tk.Label(row, text=str(val), bg=PANEL, fg=GREEN,
+                font=FM, anchor="e").pack(side="right")
+
+    # ──────────────────────────────────────────
+    # Tabs
+    # ──────────────────────────────────────────
 
     def set_tab(self, name):
         if name != "Stats Replay":
-            self.pause_replay()
+            self._pause_replay()
         self.tab_name.set(name)
-        self.rebuild_tabs()
-        self.render_tab()
-        self.update_replay_header()
+        self._redraw_tabs()
+        self._render_tab()
+        self._update_replay_header()
 
-    def render_tab(self):
-        for child in self.tab_content.winfo_children():
-            child.destroy()
+    def _render_tab(self):
+        self._clear(self.tab_content)
+        m    = self.current_match
+        body = self._tab_body()
+        t    = self.tab_name.get()
+        if   t == "Overview":     self._tab_overview(body, m)
+        elif t == "Stats Replay": self._tab_stats(body, m)
+        elif t == "Attack":       self._tab_attack(body, m)
+        elif t == "Control":      self._tab_control(body, m)
+        elif t == "Defense":      self._tab_defense(body, m)
+        elif t == "Line-ups":     self._tab_lineups(body, m)
+        elif t == "Chat":         self._tab_chat(body, m)
+        elif t == "Table":        self._tab_table(body, m)
+        elif t == "H2H":          self._tab_h2h(body, m)
 
-        match = self.current_match
-        body = self.tab_body()
-        tab = self.tab_name.get()
-        if tab == "Overview":
-            self.render_overview_tab(body, match)
-        elif tab == "Stats Replay":
-            self.render_stats_tab(body, match)
-        elif tab == "Attack":
-            self.render_attack_tab(body, match)
-        elif tab == "Control":
-            self.render_control_tab(body, match)
-        elif tab == "Defense":
-            self.render_defense_tab(body, match)
-        elif tab == "Line-ups":
-            self.render_lineups_tab(body, match)
-        elif tab == "Chat":
-            self.render_chat_tab(body, match)
-        elif tab == "Table":
-            self.render_table_tab(body, match)
-        elif tab == "H2H":
-            self.render_h2h_tab(body, match)
+    def _tab_overview(self, p, m):
+        minute = self._cur_minute(m)
+        maxm   = self._max_minute(m)
+        self._sec(p, "MATCH OVERVIEW")
+        tk.Label(p, text=f"Viewing replay at {minute:02d}' of {maxm}'",
+            bg=PANEL, fg=MUTED, font=FS, anchor="w").pack(fill="x", pady=(0,4))
+        self._summary_row(p, self._stats_summary(m, minute, maxm))
+        self._sec(p, "MATCH DETAILS")
+        d = self._card(p)
+        for lbl, val in [
+            ("Competition", m.get("tournament","")),
+            ("Status",      m.get("status","")),
+            ("Venue",       m.get("venue","")),
+            ("Minute",      f"{minute:02d}'" if minute else "Pre-match"),
+            ("Referee",     m.get("referee","")),
+        ]:
+            row = tk.Frame(d, bg=PANEL_DARK)
+            row.pack(fill="x", padx=10, pady=3)
+            tk.Label(row, text=lbl, bg=PANEL_DARK, fg=MUTED,  font=FS, width=14, anchor="w").pack(side="left")
+            tk.Label(row, text=val, bg=PANEL_DARK, fg=TEXT,   font=FB, anchor="w").pack(side="left")
+        self._sec(p, "KEY STATS")
+        c = self._card(p)
+        c.pack(fill="x", pady=(0,4))
+        for lbl, h, a in self._stats_at(m, minute, maxm)[:6]:
+            self._stat_bar(c, lbl, h, a)
 
-    def tab_body(self):
-        canvas = tk.Canvas(self.tab_content, bg=PANEL, highlightthickness=0)
-        scrollbar = tk.Scrollbar(self.tab_content, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        body = tk.Frame(canvas, bg=PANEL)
-        window_id = canvas.create_window((0, 0), window=body, anchor="nw")
+    def _tab_stats(self, p, m):
+        maxm = self._max_minute(m)
+        self._sec(p, "MATCH STATS TIMELINE")
+        summ = self._summary_row(p, self._stats_summary(m, maxm))
+        slbls = {}
+        for box in summ.winfo_children()[0].winfo_children():
+            lbls = [c for c in box.winfo_children() if isinstance(c, tk.Label)]
+            if len(lbls) >= 2:
+                slbls[lbls[0].cget("text")] = lbls[1]
 
-        def on_body_configure(_event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
+        sc = self._card(p)
+        sc.pack(fill="x", pady=(0,6))
+        top = tk.Frame(sc, bg=PANEL_DARK)
+        top.pack(fill="x", padx=8, pady=(6,2))
+        tk.Label(top, text="MATCH REPLAY", bg=PANEL_DARK, fg=CYAN,
+            font=FB, anchor="w").pack(side="left")
+        ml = tk.Label(top, text="", bg=PANEL_DARK, fg=ORANGE, font=FB, anchor="e")
+        ml.pack(side="right")
 
-        def on_canvas_configure(event):
-            canvas.itemconfigure(window_id, width=event.width)
+        sw = tk.Frame(sc, bg=PANEL_DARK)
+        sw.pack(fill="x", padx=8, pady=(0,6))
+        tk.Label(sw, text="0'", bg=PANEL_DARK, fg=MUTED, font=FS).pack(side="left")
+        slider = tk.Scale(sw, from_=0, to=maxm, orient="horizontal",
+            showvalue=False, resolution=1, bg=PANEL_DARK, fg=TEXT,
+            troughcolor="#243244", highlightthickness=0, activebackground=ORANGE)
+        slider.pack(side="left", fill="x", expand=True, padx=6)
+        tk.Label(sw, text=f"{maxm}'", bg=PANEL_DARK, fg=MUTED, font=FS).pack(side="right")
+        tk.Label(sc,
+            text="Slide to replay how stats changed minute by minute.",
+            bg=PANEL_DARK, fg=MUTED, font=FS, anchor="w").pack(fill="x", padx=8, pady=(0,4))
 
-        body.bind("<Configure>", on_body_configure)
-        canvas.bind("<Configure>", on_canvas_configure)
-        return body
+        mkr = tk.Canvas(sc, bg=PANEL_DARK, height=24, highlightthickness=0)
+        mkr.pack(fill="x", padx=8, pady=(0,6))
 
-    def section_title(self, parent, text):
-        tk.Label(
-            parent,
-            text=text,
-            bg=PANEL,
-            fg=CYAN,
-            font=FONT_BOLD,
-            anchor="w",
-            pady=6,
-        ).pack(fill="x")
+        ctrl = tk.Frame(sc, bg=PANEL_DARK)
+        ctrl.pack(fill="x", padx=8, pady=(0,6))
+        self._btn(ctrl,"Play", CYAN_DARK, self._play_replay,  width=8,pady=5).pack(side="left",padx=(0,4))
+        self._btn(ctrl,"Pause",GRAY_BTN,  self._pause_replay, width=8,pady=5).pack(side="left",padx=(0,4))
+        self._btn(ctrl,"Stop", RED_DARK,  self._stop_replay,  width=8,pady=5).pack(side="left")
 
-    def info_card(self, parent):
-        card = tk.Frame(parent, bg=PANEL_DARK, highlightbackground=BORDER, highlightthickness=1)
-        card.pack(fill="x", pady=6)
-        return card
+        sf = tk.Frame(p, bg=PANEL)
+        sf.pack(fill="x")
+        ef = self._card(p)
+        ef.pack(fill="x", pady=(6,3))
 
-    def render_stat_summary_row(self, parent, summaries):
-        card = self.info_card(parent)
-        card.pack(fill="x", pady=(0, 8))
-        row = tk.Frame(card, bg=PANEL_DARK)
-        row.pack(fill="x", padx=10, pady=8)
-        for label, home_pct, away_pct in summaries:
-            box = tk.Frame(row, bg="#243244")
-            box.pack(side="left", expand=True, fill="x", padx=3)
-            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
-            tk.Label(box, text=f"{home_pct}% / {away_pct}%", bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 2))
-            strip = tk.Frame(box, bg="#1a2435", height=6)
-            strip.pack(fill="x", padx=10, pady=(2, 8))
-            left = max(1, int(home_pct))
-            right = max(1, int(away_pct))
-            strip.grid_columnconfigure(0, weight=left)
-            strip.grid_columnconfigure(1, weight=right)
-            tk.Frame(strip, bg=CYAN, height=6).grid(row=0, column=0, sticky="ew")
-            tk.Frame(strip, bg=ORANGE, height=6).grid(row=0, column=1, sticky="ew")
-        return card
+        def refresh(val):
+            mn = int(float(val))
+            self.replay_minute = mn
+            ml.config(text=f"{mn:02d}'")
+            for lbl, hp, ap in self._stats_summary(m, mn, maxm):
+                if lbl in slbls:
+                    slbls[lbl].config(text=f"{hp}% / {ap}%")
+            self._clear(sf)
+            for lbl, h, a in self._stats_at(m, mn, maxm):
+                self._stat_bar(sf, lbl, h, a)
+            self._render_replay_events(ef, m, mn, maxm)
 
-    def render_replay_state_note(self, parent, minute, max_minute):
-        tk.Label(
-            parent,
-            text=f"Viewing replay state at {minute:02d}' of {max_minute}'",
-            bg=PANEL,
-            fg=MUTED,
-            font=FONT_SMALL,
-            anchor="w",
-        ).pack(fill="x", pady=(0, 4))
+        slider.configure(command=refresh)
+        self._draw_markers(mkr, m, maxm)
+        mkr.bind("<Configure>", lambda _e: self._draw_markers(mkr, m, maxm))
+        self.replay_slider  = slider
+        self.replay_refresh = refresh
+        self.replay_max_minute = maxm
+        slider.set(self._cur_minute(m))
+        refresh(slider.get())
 
-    def update_replay_header(self):
-        minute = self.current_replay_minute(self.current_match)
-        match_minute = self.stats_reference_minute(self.current_match)
-        text = f"Viewing {minute:02d}' replay"
-        if minute == match_minute:
-            text = f"Viewing current state {minute:02d}'"
-        if self.replay_running:
-            text = f"Playing replay from {self.replay_start_minute:02d}'  |  now {minute:02d}'"
-        self.score_labels["replay_state"].config(text=text)
+    def _tab_attack(self, p, m):
+        mn = self._cur_minute(m); mx = self._max_minute(m)
+        self._sec(p, "ATTACK PROFILE")
+        tk.Label(p, text=f"Replay at {mn:02d}' of {mx}'",
+            bg=PANEL, fg=MUTED, font=FS, anchor="w").pack(fill="x", pady=(0,4))
+        self._summary_row(p, self._attack_summary(m, mn, mx))
+        self._sec(p, "ATTACKING STATS")
+        c = self._card(p); c.pack(fill="x", pady=(0,4))
+        for lbl, h, a in self._attack_stats(m, mn, mx):
+            self._stat_bar(c, lbl, h, a)
+
+    def _tab_control(self, p, m):
+        mn = self._cur_minute(m); mx = self._max_minute(m)
+        self._sec(p, "CONTROL & TERRITORY")
+        self._summary_row(p, self._control_summary(m, mn, mx))
+        self._sec(p, "CONTROL STATS")
+        c = self._card(p); c.pack(fill="x", pady=(0,4))
+        for lbl, h, a in self._control_stats(m, mn, mx):
+            self._stat_bar(c, lbl, h, a)
+
+    def _tab_defense(self, p, m):
+        mn = self._cur_minute(m); mx = self._max_minute(m)
+        self._sec(p, "DEFENSE & DISCIPLINE")
+        self._summary_row(p, self._defense_summary(m, mn, mx))
+        self._sec(p, "DEFENSIVE STATS")
+        c = self._card(p); c.pack(fill="x", pady=(0,4))
+        for lbl, h, a in self._defense_stats(m, mn, mx):
+            self._stat_bar(c, lbl, h, a)
+
+    def _tab_lineups(self, p, m):
+        mn = self._cur_minute(m); mx = self._max_minute(m)
+        self._sec(p, "LINE-UPS & SHAPE")
+        tk.Label(p, text=f"Replay at {mn:02d}'",
+            bg=PANEL, fg=MUTED, font=FS, anchor="w").pack(fill="x", pady=(0,4))
+        summ = self._card(p)
+        sr = tk.Frame(summ, bg=PANEL_DARK)
+        sr.pack(fill="x", padx=8, pady=6)
+        for lbl, val in [
+            (m.get("home",""), self._lineup_formation(m,"home",mn)),
+            ("Replay", f"{mn:02d}'"),
+            (m.get("away",""), self._lineup_formation(m,"away",mn)),
+        ]:
+            box = tk.Frame(sr, bg="#243244")
+            box.pack(side="left", expand=True, fill="x", padx=2)
+            tk.Label(box, text=lbl, bg="#243244", fg=MUTED, font=FS).pack(pady=(4,1))
+            tk.Label(box, text=val, bg="#243244", fg=TEXT, font=FB).pack(pady=(0,4))
+        pc = self._card(p)
+        pitch = tk.Canvas(pc, bg="#56761b", height=480, highlightthickness=0)
+        pitch.pack(fill="both", expand=True, padx=6, pady=6)
+        self._draw_pitch(pitch, m, mn)
+
+    def _tab_chat(self, p, m):
+        self._sec(p, "MATCH CHAT")
+        mn = self._cur_minute(m)
+        rm = self._active_room(m)
+
+        rooms_f = tk.Frame(p, bg=PANEL)
+        rooms_f.pack(fill="x", pady=(0,4))
+        for r in ["Open Room","Value Talk","Live Pulse","Post-match"]:
+            active = r == rm
+            count  = len(self._chat_thread_room(m, r))
+            tk.Button(rooms_f, text=f"{r} {count}",
+                bg=TEXT if active else PANEL_DARK,
+                fg=BG  if active else MUTED,
+                relief="flat", font=FB, padx=10, pady=4,
+                command=lambda rn=r: self._set_room(m, rn)).pack(side="left", padx=(0,4))
+
+        feed = self._card(p)
+        feed.pack(fill="both", expand=True, pady=(0,4))
+        fc = tk.Canvas(feed, bg=PANEL_DARK, height=300, highlightthickness=0)
+        fsc= tk.Scrollbar(feed, orient="vertical", command=fc.yview)
+        fc.configure(yscrollcommand=fsc.set)
+        fc.pack(side="left", fill="both", expand=True, padx=(6,0), pady=6)
+        fsc.pack(side="right", fill="y", pady=6, padx=(0,6))
+        fb = tk.Frame(fc, bg=PANEL_DARK)
+        wid = fc.create_window((0,0), window=fb, anchor="nw")
+        fb.bind("<Configure>", lambda _e: fc.configure(scrollregion=fc.bbox("all")))
+        fc.bind("<Configure>", lambda e: fc.itemconfigure(wid, width=e.width))
+        for item in self._chat_thread(m):
+            self._chat_bubble(fb, item)
+
+        comp = self._card(p)
+        comp.pack(fill="x", pady=(0,4))
+        row = tk.Frame(comp, bg=PANEL_DARK)
+        row.pack(fill="x", padx=8, pady=8)
+        e = tk.Entry(row, textvariable=self.chat_message,
+            bg=PANEL_DARK, fg=TEXT, insertbackground=TEXT, relief="flat", font=FS)
+        e.pack(side="left", fill="x", expand=True, padx=(0,6), ipady=5)
+        e.bind("<Return>", lambda _e, mc=m: self._post_chat(mc))
+        self._btn(row,"Post",CYAN_DARK,lambda mc=m: self._post_chat(mc),width=8,pady=5).pack(side="left")
+
+    def _tab_table(self, p, m):
+        self._sec(p, f"{m.get('league','')} TABLE")
+        t = self._card(p)
+        hdr = tk.Frame(t, bg=PANEL_DARK)
+        hdr.pack(fill="x", padx=6, pady=(6,2))
+        for txt, w in [("#",4),("Team",20),("P",5),("GD",6),("PTS",6),("W",5)]:
+            tk.Label(hdr, text=txt, bg=PANEL_DARK, fg=MUTED,
+                font=FS, width=w, anchor="w").pack(side="left")
+        for pos, team, played, gd, pts, wins in self._table_rows(m):
+            active = team in (m.get("home",""), m.get("away",""))
+            row = tk.Frame(t, bg="#263244" if active else PANEL_DARK)
+            row.pack(fill="x", padx=6, pady=1)
+            col = ORANGE if active else TEXT
+            for txt, w, fg in [
+                (str(pos),4,MUTED),(team,20,col),(str(played),5,MUTED),
+                (f"{gd:+}",6,MUTED),(str(pts),6,TEXT),(str(wins),5,MUTED),
+            ]:
+                tk.Label(row, text=txt, bg=row.cget("bg"),
+                    fg=fg, font=FB if active else FS,
+                    width=w, anchor="w").pack(side="left", pady=4)
+
+    def _tab_h2h(self, p, m):
+        self._sec(p, "HEAD TO HEAD")
+        for season, home, away, hs, as_ in self._h2h_rows(m):
+            c = self._card(p)
+            tk.Label(c, text=season, bg=PANEL_DARK, fg=CYAN,
+                font=FB, anchor="w").pack(fill="x", padx=8, pady=(6,2))
+            for team, score in [(home,hs),(away,as_)]:
+                row = tk.Frame(c, bg=PANEL_DARK)
+                row.pack(fill="x", padx=8, pady=2)
+                tk.Label(row, text=self._initials(team), bg=PANEL_DARK,
+                    fg=MUTED, font=FM, width=5).pack(side="left")
+                tk.Label(row, text=team, bg=PANEL_DARK, fg=TEXT,
+                    font=FS, anchor="w").pack(side="left", fill="x", expand=True)
+                tk.Label(row, text=str(score), bg=PANEL_DARK, fg=TEXT,
+                    font=FB, width=3).pack(side="right")
+
+    # ──────────────────────────────────────────
+    # Markets (bottom center)
+    # ──────────────────────────────────────────
+
+    def _render_markets(self):
+        if not self.odds_body or not self.predictions_body:
+            return
+        self._clear(self.odds_body)
+        self._clear(self.predictions_body)
+        m = self.current_match
+        if self.selected_odds_book:
+            self._odds_detail(m, self.selected_odds_book)
+        else:
+            self._odds_board(m)
+        if self.selected_prediction_source:
+            self._pred_detail(m, self.selected_prediction_source)
+        else:
+            self._pred_feed(m)
+
+    def _odds_board(self, m):
+        p = self.odds_body
+        hdr = tk.Frame(p, bg=PANEL_DARK)
+        hdr.pack(fill="x", padx=4, pady=(4,2))
+        for txt, w in [("BOOK",13),("HOME",7),("DRAW",7),("AWAY",7),("EDGE",7)]:
+            tk.Label(hdr, text=txt, bg=PANEL_DARK, fg=ORANGE,
+                font=FM, width=w, anchor="w").pack(side="left")
+        for book, home, draw, away, edge in self._odds_rows(m):
+            rb = ROW_ALT if edge>=0 else ROW
+            row= tk.Frame(p, bg=rb)
+            row.pack(fill="x", padx=4, pady=1)
+            for txt, w, c in [
+                (book,13,TEXT),(f"{home:.2f}",7,CYAN),
+                (f"{draw:.2f}",7,MUTED),(f"{away:.2f}",7,ORANGE),
+                (f"{edge:+.1f}",7,GREEN if edge>=0 else RED),
+            ]:
+                lb = tk.Label(row, text=txt, bg=rb, fg=c, font=FM, width=w, anchor="w")
+                lb.pack(side="left", pady=3)
+                lb.bind("<Button-1>", lambda _e, b=book: self._open_odds(b))
+            row.bind("<Button-1>", lambda _e, b=book: self._open_odds(b))
+        best = max(self._odds_rows(m), key=lambda x: x[4])
+        tk.Label(p, text=f"Best: {best[0]}  edge {best[4]:+.1f}",
+            bg=PANEL, fg=GREEN if best[4]>=0 else RED,
+            font=FS, anchor="w").pack(fill="x", padx=4, pady=(3,2))
+
+    def _odds_detail(self, m, book_name):
+        p = self.odds_body
+        top = tk.Frame(p, bg=PANEL_DARK)
+        top.pack(fill="x", padx=4, pady=(4,4))
+        tk.Button(top, text="< Back", bg="#243244", fg=TEXT,
+            relief="flat", font=FS, command=self._close_odds).pack(side="left")
+        tk.Label(top, text=f"{book_name}", bg=PANEL_DARK,
+            fg=ORANGE, font=FB).pack(side="left", padx=8)
+        for market, left, mid, right, note in self._odds_detail_rows(m, book_name):
+            row = tk.Frame(p, bg=ROW)
+            row.pack(fill="x", padx=4, pady=1)
+            for txt, w, c in [
+                (market,18,TEXT),(left,10,CYAN),(mid,9,MUTED),
+                (right,10,ORANGE),(note,15,GREEN if "value" in note.lower() else MUTED),
+            ]:
+                tk.Label(row, text=txt, bg=ROW, fg=c,
+                    font=FM, width=w, anchor="w").pack(side="left", pady=3)
+
+    def _pred_feed(self, m):
+        p = self.predictions_body
+        hdr = tk.Frame(p, bg=PANEL_DARK)
+        hdr.pack(fill="x", padx=4, pady=(4,2))
+        for txt, w in [("SOURCE",13),("HOME",7),("DRAW",7),("AWAY",7),("PICK",10)]:
+            tk.Label(hdr, text=txt, bg=PANEL_DARK, fg=ORANGE,
+                font=FM, width=w, anchor="w").pack(side="left")
+        for src, h, d, a, pick in self._pred_rows(m):
+            row = tk.Frame(p, bg=ROW)
+            row.pack(fill="x", padx=4, pady=1)
+            pc = CYAN if pick==m.get("home") else ORANGE if pick==m.get("away") else MUTED
+            for txt, w, c in [
+                (src,13,TEXT),(f"{h}%",7,CYAN),(f"{d}%",7,MUTED),
+                (f"{a}%",7,ORANGE),(pick[:10],10,pc),
+            ]:
+                lb = tk.Label(row, text=txt, bg=ROW, fg=c, font=FM, width=w, anchor="w")
+                lb.pack(side="left", pady=3)
+                lb.bind("<Button-1>", lambda _e, s=src: self._open_pred(s))
+            row.bind("<Button-1>", lambda _e, s=src: self._open_pred(s))
+        cons = self._consensus(m)
+        sc = self._card(p)
+        tk.Label(sc, text=f"CONSENSUS: {cons['pick']}  {cons['confidence']}% confidence",
+            bg=PANEL_DARK, fg=TEXT, font=FB, anchor="w").pack(fill="x", padx=8, pady=5)
+
+    def _pred_detail(self, m, source_name):
+        p = self.predictions_body
+        top = tk.Frame(p, bg=PANEL_DARK)
+        top.pack(fill="x", padx=4, pady=(4,4))
+        tk.Button(top, text="< Back", bg="#243244", fg=TEXT,
+            relief="flat", font=FS, command=self._close_pred).pack(side="left")
+        tk.Label(top, text=source_name, bg=PANEL_DARK,
+            fg=ORANGE, font=FB).pack(side="left", padx=8)
+        detail = self._pred_detail_data(m, source_name)
+        sc = self._card(p)
+        tk.Label(sc, text=detail["headline"], bg=PANEL_DARK, fg=TEXT,
+            font=FB, anchor="w").pack(fill="x", padx=8, pady=(6,2))
+        for lbl, val in detail["markets"]:
+            row = tk.Frame(sc, bg=PANEL_DARK)
+            row.pack(fill="x", padx=8, pady=1)
+            tk.Label(row, text=lbl, bg=PANEL_DARK, fg=CYAN, font=FS, width=16, anchor="w").pack(side="left")
+            tk.Label(row, text=val, bg=PANEL_DARK, fg=TEXT, font=FS, anchor="w").pack(side="left")
+
+    def _open_odds(self, b):
+        self.selected_odds_book = b; self._render_markets()
+    def _close_odds(self):
+        self.selected_odds_book = None; self._render_markets()
+    def _open_pred(self, s):
+        self.selected_prediction_source = s; self._render_markets()
+    def _close_pred(self):
+        self.selected_prediction_source = None; self._render_markets()
+
+    # ──────────────────────────────────────────
+    # Quick find / action bar
+    # ──────────────────────────────────────────
 
     def quick_find(self):
         query = self.quick_query.get().strip()
         if not query:
-            self.tracker_status.config(
-                text="Try a quick jump like: 35 minute shots, lineups, table, h2h, or possession.",
-                fg=MUTED,
-            )
             return
-
         lower = query.lower()
-        minute = None
-        minute_match = re.search(r"(\d{1,3})", lower)
-        if minute_match:
-            minute = min(int(minute_match.group(1)), self.stats_max_minute(self.current_match))
-            self.set_replay_minute(minute)
-
-        tab, label = self.resolve_quick_find_target(lower)
+        mn = None
+        hit = re.search(r"(\d{1,3})", lower)
+        if hit:
+            mn = min(int(hit.group(1)), self._max_minute(self.current_match))
+            self._set_replay_minute(mn)
+        tab, lbl = self._qf_target(lower)
         if tab:
             self.set_tab(tab)
+        msg = f"Quick Find: {lbl}"
+        if mn is not None:
+            msg += f" at {self._cur_minute(self.current_match):02d}'"
+        if self.tracker_status:
+            self.tracker_status.config(text=msg, fg=CYAN)
 
-        minute_text = f" at {self.current_replay_minute(self.current_match):02d}'" if minute is not None else ""
-        message = f"Quick Find: opened {label}{minute_text}."
-        self.tracker_status.config(text=message, fg=CYAN)
-
-    def resolve_quick_find_target(self, query):
-        mappings = [
-            (("chat", "room", "debate", "talk"), "Chat", "match chat"),
-            (("lineup", "line-ups", "formation", "player"), "Line-ups", "Line-ups"),
-            (("table", "standings", "rank"), "Table", "league table"),
-            (("h2h", "head to head", "previous"), "H2H", "head-to-head"),
-            (("attack", "shot", "shots", "xg", "chance", "goal"), "Attack", "attack profile"),
-            (("possession", "pass", "control", "territory", "corner", "cross"), "Control", "control profile"),
-            (("defense", "defence", "foul", "card", "save", "offside", "duel"), "Defense", "defense profile"),
-            (("replay", "timeline", "minute", "live"), "Stats Replay", "stats replay"),
-            (("overview", "summary", "info"), "Overview", "overview"),
-        ]
-        for terms, tab, label in mappings:
-            if any(term in query for term in terms):
-                return tab, label
+    def _qf_target(self, q):
+        for terms, tab, lbl in [
+            (("chat","room"),               "Chat",         "chat"),
+            (("lineup","formation"),        "Line-ups",     "line-ups"),
+            (("table","standings","rank"),  "Table",        "table"),
+            (("h2h","head to head"),        "H2H",          "h2h"),
+            (("attack","shot","xg"),        "Attack",       "attack"),
+            (("possession","control"),      "Control",      "control"),
+            (("defense","defence","foul"),  "Defense",      "defense"),
+            (("replay","timeline"),         "Stats Replay", "replay"),
+            (("overview","summary"),        "Overview",     "overview"),
+        ]:
+            if any(t in q for t in terms):
+                return tab, lbl
         return "Overview", "overview"
 
-    def reset_replay_to_live(self):
-        target = self.stats_reference_minute(self.current_match)
-        self.set_replay_minute(target)
-        self.tracker_status.config(text=f"Replay reset to current minute {target:02d}'.", fg=GREEN)
+    def reset_to_live(self):
+        t = self._ref_minute(self.current_match)
+        self._set_replay_minute(t)
+        if self.tracker_status:
+            self.tracker_status.config(text=f"Reset to {t:02d}'", fg=GREEN)
 
-    def draw_timeline_markers(self, canvas, match, max_minute):
-        canvas.delete("all")
-        width = max(canvas.winfo_width(), 10)
-        left_pad = 6
-        right_pad = 6
-        line_y = 11
-        canvas.create_line(left_pad, line_y, width - right_pad, line_y, fill=BORDER, width=2)
+    # ──────────────────────────────────────────
+    # Replay
+    # ──────────────────────────────────────────
 
-        events = self.timeline_events(match, max_minute)
-        for idx, event in enumerate(events):
-            x = left_pad + ((width - left_pad - right_pad) * event["minute"] / max(max_minute, 1))
-            color = self.event_color(event["event"])
-            tag = f"marker_{idx}"
-            canvas.create_line(x, 4, x, 18, fill=color, width=2, tags=(tag,))
-            canvas.create_oval(x - 3, line_y - 3, x + 3, line_y + 3, fill=color, outline=color, tags=(tag,))
-            canvas.create_text(x, 23, text=event["minute_text"], fill=MUTED, font=FONT_SMALL, tags=(tag,))
-            canvas.tag_bind(tag, "<Button-1>", lambda _event, minute=event["minute"]: self.jump_to_replay_minute(minute))
-
-    def event_color(self, event_name):
-        color_map = {
-            "GOAL": ORANGE,
-            "CARD": YELLOW,
-            "SUB": CYAN,
-            "SHOT": CYAN,
-            "SAVE": CYAN,
-            "PRESS": GREEN,
-            "VAR": PURPLE,
-            "PEN": RED,
-            "SCORE": MUTED,
-        }
-        return color_map.get(event_name, CYAN)
-
-    def render_player_panels(self, parent, context, left_title, left_rows, right_title, right_rows, accent):
-        wrap = tk.Frame(parent, bg=PANEL)
-        wrap.pack(fill="x", pady=(0, 6))
-        left = self.info_card(wrap)
-        right = self.info_card(wrap)
-        left.pack_forget()
-        right.pack_forget()
-        left.grid(in_=wrap, row=0, column=0, sticky="nsew", padx=(0, 4))
-        right.grid(in_=wrap, row=0, column=1, sticky="nsew", padx=(4, 0))
-        wrap.grid_columnconfigure(0, weight=1)
-        wrap.grid_columnconfigure(1, weight=1)
-        self.render_player_panel(left, context, left_title, left_rows, accent)
-        self.render_player_panel(right, context, right_title, right_rows, accent)
-        self.render_selected_player_detail(parent, context)
-
-    def render_player_panel(self, parent, context, title, rows, accent):
-        header = tk.Frame(parent, bg=PANEL_DARK)
-        header.pack(fill="x", padx=10, pady=(8, 4))
-        tk.Label(header, text=title, bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(side="left")
-        tk.Frame(header, bg=accent, width=26, height=4).pack(side="right", pady=6)
-
-        for detail in rows:
-            name = detail["name"]
-            stat_line = detail["summary"]
-            row = tk.Frame(parent, bg=PANEL_DARK)
-            row.pack(fill="x", padx=10, pady=3)
-            badge = tk.Label(row, text=self.team_initials(name)[:2], bg="#243244", fg=TEXT, font=FONT_MONO_SMALL, width=4, pady=4)
-            badge.pack(side="left")
-            text_wrap = tk.Frame(row, bg=PANEL_DARK)
-            text_wrap.pack(side="left", fill="x", expand=True, padx=(8, 0))
-            name_label = tk.Label(text_wrap, text=name, bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, anchor="w", cursor="hand2")
-            name_label.pack(fill="x")
-            stat_label = tk.Label(text_wrap, text=stat_line, bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w", cursor="hand2")
-            stat_label.pack(fill="x")
-            arrow = tk.Label(row, text=">", bg=PANEL_DARK, fg=accent, font=FONT_BOLD, width=2, cursor="hand2")
-            arrow.pack(side="right")
-            for widget in (row, badge, text_wrap, name_label, stat_label, arrow):
-                widget.bind(
-                    "<Button-1>",
-                    lambda _event, payload=detail, section=context: self.open_player_detail(section, payload),
-                )
-
-    def render_selected_player_detail(self, parent, context):
-        detail = self.selected_player_detail
-        if not detail or detail["context"] != context:
-            hint = tk.Label(
-                parent,
-                text="Click a player row to open a deeper performance card.",
-                bg=PANEL,
-                fg=MUTED,
-                font=FONT_SMALL,
-                anchor="w",
-            )
-            hint.pack(fill="x", pady=(0, 6))
-            return
-
-        card = self.info_card(parent)
-        top = tk.Frame(card, bg=PANEL_DARK)
-        top.pack(fill="x", padx=10, pady=(8, 4))
-        tk.Label(top, text=f"{detail['name']}  |  {detail['team']}", bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(side="left")
-        tk.Button(
-            top,
-            text="Close",
-            bg="#243244",
-            fg=TEXT,
-            activebackground="#334155",
-            activeforeground=TEXT,
-            relief="flat",
-            font=FONT_SMALL,
-            command=self.close_player_detail,
-        ).pack(side="right")
-
-        tk.Label(
-            card,
-            text=detail["headline"],
-            bg=PANEL_DARK,
-            fg=MUTED,
-            font=FONT_SMALL,
-            anchor="w",
-            padx=10,
-            pady=2,
-        ).pack(fill="x")
-
-        metrics = tk.Frame(card, bg=PANEL_DARK)
-        metrics.pack(fill="x", padx=10, pady=(4, 8))
-        for idx, (label, value) in enumerate(detail["metrics"]):
-            box = tk.Frame(metrics, bg="#243244")
-            box.grid(row=0, column=idx, sticky="ew", padx=3)
-            metrics.grid_columnconfigure(idx, weight=1)
-            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
-            tk.Label(box, text=value, bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 6))
-
-        notes = tk.Frame(card, bg=PANEL_DARK)
-        notes.pack(fill="x", padx=10, pady=(0, 10))
-        tk.Label(notes, text="Why it matters", bg=PANEL_DARK, fg=CYAN, font=FONT_BOLD, anchor="w").pack(fill="x", pady=(0, 4))
-        for line in detail["notes"]:
-            tk.Label(notes, text=f"+ {line}", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", pady=1)
-
-    def open_player_detail(self, context, payload):
-        self.selected_player_detail = {"context": context, **payload}
-        self.render_tab()
-
-    def close_player_detail(self):
-        self.selected_player_detail = None
-        self.render_tab()
-
-    def jump_to_replay_minute(self, minute):
-        self.pause_replay()
-        self.set_replay_minute(minute)
-
-    def play_replay(self):
-        if self.replay_slider is None or self.tab_name.get() != "Stats Replay":
-            self.set_tab("Stats Replay")
-        if self.replay_slider is None:
-            return
+    def _update_replay_header(self):
+        mn  = self._cur_minute(self.current_match)
+        ref = self._ref_minute(self.current_match)
+        txt = f"Viewing current state {mn:02d}'" if mn==ref else f"Viewing {mn:02d}' replay"
         if self.replay_running:
+            txt = f"Playing from {self.replay_start_minute:02d}'  |  now {mn:02d}'"
+        self.score_labels["replay_state"].config(text=txt)
+
+    def _play_replay(self):
+        if self.replay_slider is None:
+            self.set_tab("Stats Replay")
+        if not self.replay_slider or self.replay_running:
             return
         self.replay_running = True
-        self.replay_start_minute = self.current_replay_minute(self.current_match)
-        self.update_replay_header()
-        self.replay_tick()
+        self.replay_start_minute = self._cur_minute(self.current_match)
+        self._update_replay_header()
+        self._replay_tick()
 
-    def replay_tick(self):
-        if not self.replay_running or self.replay_slider is None:
+    def _replay_tick(self):
+        if not self.replay_running or not self.replay_slider:
             return
-        current = self.current_replay_minute(self.current_match)
-        if current >= self.replay_max_minute:
-            self.pause_replay()
-            return
-        next_minute = current + 1
-        self.set_replay_minute(next_minute)
-        self.replay_job = self.root.after(380, self.replay_tick)
+        cur = self._cur_minute(self.current_match)
+        if cur >= self.replay_max_minute:
+            self._pause_replay(); return
+        self._set_replay_minute(cur + 1)
+        self.replay_job = self.root.after(380, self._replay_tick)
 
-    def pause_replay(self):
+    def _pause_replay(self):
         self.replay_running = False
-        if self.replay_job is not None:
+        if self.replay_job:
             self.root.after_cancel(self.replay_job)
             self.replay_job = None
-        self.update_replay_header()
+        self._update_replay_header()
 
-    def stop_replay(self, reset_to_current=True):
-        self.pause_replay()
-        target = self.replay_start_minute
-        if target is None:
-            target = self.stats_reference_minute(self.current_match) if reset_to_current else self.current_replay_minute(self.current_match)
+    def _stop_replay(self, reset=True):
+        self._pause_replay()
+        target = self.replay_start_minute if self.replay_start_minute is not None else self._ref_minute(self.current_match)
         self.replay_start_minute = None
-        self.set_replay_minute(target)
+        self._set_replay_minute(target)
 
-    def set_replay_minute(self, minute):
-        minute = max(0, min(int(minute), self.stats_max_minute(self.current_match)))
-        self.replay_minute = minute
-        if self.replay_slider is not None and self.tab_name.get() == "Stats Replay":
-            self.replay_slider.set(minute)
-            if self.replay_refresh is not None:
-                self.replay_refresh(str(minute))
+    def _set_replay_minute(self, mn):
+        mn = max(0, min(int(mn), self._max_minute(self.current_match)))
+        self.replay_minute = mn
+        if self.replay_slider and self.tab_name.get() == "Stats Replay":
+            self.replay_slider.set(mn)
+            if self.replay_refresh:
+                self.replay_refresh(str(mn))
         else:
-            self.update_replay_header()
-            self.render_tab()
+            self._update_replay_header()
+            self._render_tab()
 
-    def render_info_rows(self, parent, rows):
-        for label, home, away in rows:
-            row = tk.Frame(parent, bg=PANEL)
-            row.pack(fill="x", pady=5)
-            tk.Label(row, text=label, bg=PANEL, fg=CYAN, font=FONT_BOLD, width=18, anchor="w").pack(side="left")
-            tk.Label(row, text=home, bg=PANEL, fg=TEXT, font=FONT_UI, anchor="w").pack(side="left", padx=(6, 20))
-            if away:
-                tk.Label(row, text=away, bg=PANEL, fg=MUTED, font=FONT_UI, anchor="w").pack(side="left")
+    def _draw_markers(self, canvas, m, maxm):
+        canvas.delete("all")
+        W = max(canvas.winfo_width(), 10)
+        lp, rp, ly = 4, 4, 10
+        canvas.create_line(lp, ly, W-rp, ly, fill=BORDER, width=2)
+        for idx, ev in enumerate(self._timeline_events(m, maxm)):
+            x   = lp + (W-lp-rp) * ev["minute"] / max(maxm,1)
+            col = self._ev_color(ev["event"])
+            tag = f"mk_{idx}"
+            canvas.create_line(x,3,x,17, fill=col, width=2, tags=(tag,))
+            canvas.create_oval(x-3,ly-3,x+3,ly+3, fill=col, outline=col, tags=(tag,))
+            canvas.create_text(x,21, text=ev["minute_text"],
+                fill=MUTED, font=FS, tags=(tag,))
+            canvas.tag_bind(tag,"<Button-1>",
+                lambda _e, mn=ev["minute"]: self._set_replay_minute(mn))
 
-    def render_info_tab(self, parent, match):
-        self.section_title(parent, "MATCH INFO")
-        card = self.info_card(parent)
-        details = [
-            ("Date", match["date"]),
-            ("Competition", match["tournament"]),
-            ("Venue", match["venue"]),
-            ("Referee", match["referee"]),
-            ("Status", match["status"]),
-            ("Minute", f"{match['minute']}'" if match["minute"] else "Pre-match"),
-        ]
-        for idx, (label, value) in enumerate(details):
-            row = tk.Frame(card, bg=PANEL_DARK)
-            row.grid(row=idx // 2, column=idx % 2, sticky="ew", padx=12, pady=8)
-            card.grid_columnconfigure(idx % 2, weight=1)
-            tk.Label(row, text=label, bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(fill="x")
-            tk.Label(row, text=value, bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(fill="x")
-
-        self.section_title(parent, "WHO WILL WIN")
-        poll = self.info_card(parent)
-        home_pct, draw_pct, away_pct = match["pred"]
-        for label, pct, color in [
-            (match["home"], home_pct, CYAN),
-            ("Draw", draw_pct, MUTED),
-            (match["away"], away_pct, ORANGE),
-        ]:
-            row = tk.Frame(poll, bg=PANEL_DARK)
-            row.pack(fill="x", padx=12, pady=5)
-            tk.Label(row, text=label, bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, width=18, anchor="w").pack(side="left")
-            self.mini_bar(row, pct, color)
-            tk.Label(row, text=f"{pct}%", bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, width=6, anchor="e").pack(side="right")
-
-    def render_overview_tab(self, parent, match):
-        minute = self.current_replay_minute(match)
-        max_minute = self.stats_max_minute(match)
-
-        self.section_title(parent, "MATCH OVERVIEW")
-        self.render_replay_state_note(parent, minute, max_minute)
-        self.render_stat_summary_row(parent, self.stats_summary_percentages(match, minute, max_minute))
-
-        self.section_title(parent, "MATCH DETAILS")
-        details = self.info_card(parent)
-        values = [
-            ("Competition", match["tournament"]),
-            ("Status", match["status"]),
-            ("Venue", match["venue"]),
-            ("Minute", f"{minute:02d}'" if minute else "Pre-match"),
-            ("Referee", match["referee"]),
-            ("League Angle", f"{match['league']} form + market context"),
-        ]
-        for idx, (label, value) in enumerate(values):
-            row = tk.Frame(details, bg=PANEL_DARK)
-            row.grid(row=idx // 2, column=idx % 2, sticky="ew", padx=12, pady=8)
-            details.grid_columnconfigure(idx % 2, weight=1)
-            tk.Label(row, text=label, bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(fill="x")
-            tk.Label(row, text=value, bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(fill="x")
-
-        self.section_title(parent, "MATCH FLOW")
-        for minute_text, team, event, detail in self.match_events(match):
-            row = self.info_card(parent)
-            row.configure(highlightthickness=0)
-            tk.Label(row, text=minute_text, bg=PANEL_DARK, fg=MUTED, font=FONT_MONO_SMALL, width=8, anchor="w").pack(side="left", padx=10, pady=8)
-            tk.Label(row, text=event, bg=PANEL_DARK, fg=ORANGE if event == "GOAL" else YELLOW if event == "CARD" else CYAN, font=FONT_BOLD, width=10).pack(side="left")
-            tk.Label(row, text=team or "Match", bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, width=16, anchor="w").pack(side="left")
-            tk.Label(row, text=detail, bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(side="left", fill="x", expand=True)
-
-        self.section_title(parent, "KEY EDGE SNAPSHOT")
-        highlight_stats = self.match_stats_at_minute(match, minute, max_minute)[:6]
-        snapshot = self.info_card(parent)
-        snapshot.pack(fill="x", pady=(0, 4))
-        for label, home, away in highlight_stats:
-            self.stat_bar(snapshot, label, home, away)
-
-    def render_market_sections(self):
-        if self.odds_body is None or self.predictions_body is None:
-            return
-
-        self.clear(self.odds_body)
-        self.clear(self.predictions_body)
-        match = self.current_match
-
-        if self.selected_odds_book:
-            self.render_odds_detail(match, self.selected_odds_book)
-        else:
-            self.render_odds_board(match)
-
-        if self.selected_prediction_source:
-            self.render_prediction_detail(match, self.selected_prediction_source)
-        else:
-            self.render_prediction_feed(match)
-
-    def render_odds_board(self, match):
-        header = tk.Frame(self.odds_body, bg=PANEL_DARK)
-        header.pack(fill="x", padx=6, pady=(6, 2))
-        for text, width in [("BOOK", 14), ("HOME", 7), ("DRAW", 7), ("AWAY", 7), ("EDGE", 7)]:
-            tk.Label(header, text=text, bg=PANEL_DARK, fg=ORANGE, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
-
-        for book, home, draw, away, edge in self.odds_rows(match):
-            row_bg = ROW_ALT if edge >= 0 else ROW
-            row = tk.Frame(self.odds_body, bg=row_bg)
-            row.pack(fill="x", padx=6, pady=1)
-            values = [
-                (book, 14, TEXT),
-                (f"{home:.2f}", 7, CYAN),
-                (f"{draw:.2f}", 7, MUTED),
-                (f"{away:.2f}", 7, ORANGE),
-                (f"{edge:+.1f}", 7, GREEN if edge >= 0 else RED),
-            ]
-            for value, width, color in values:
-                label = tk.Label(row, text=value, bg=row_bg, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w")
-                label.pack(side="left", pady=4)
-                label.bind("<Button-1>", lambda _event, book_name=book: self.open_odds_detail(book_name))
-            row.bind("<Button-1>", lambda _event, book_name=book: self.open_odds_detail(book_name))
-
-        footer = tk.Frame(self.odds_body, bg=PANEL)
-        footer.pack(fill="x", padx=6, pady=(5, 4))
-        best = max(self.odds_rows(match), key=lambda item: item[4])
-        tk.Label(
-            footer,
-            text=f"Best value: {best[0]}  edge {best[4]:+.1f}",
-            bg=PANEL,
-            fg=GREEN if best[4] >= 0 else RED,
-            font=FONT_SMALL,
-            anchor="w",
-        ).pack(fill="x")
-        tk.Label(
-            self.odds_body,
-            text="Click a bookmaker row for full market detail. Use the top button to return.",
-            bg=PANEL,
-            fg=MUTED,
-            font=FONT_SMALL,
-            anchor="w",
-        ).pack(fill="x", padx=6, pady=(0, 4))
-
-    def render_prediction_feed(self, match):
-        header = tk.Frame(self.predictions_body, bg=PANEL_DARK)
-        header.pack(fill="x", padx=6, pady=(6, 2))
-        for text, width in [("SOURCE", 14), ("HOME", 7), ("DRAW", 7), ("AWAY", 7), ("PICK", 10)]:
-            tk.Label(header, text=text, bg=PANEL_DARK, fg=ORANGE, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
-
-        for source, home, draw, away, pick in self.prediction_rows(match):
-            row = tk.Frame(self.predictions_body, bg=ROW)
-            row.pack(fill="x", padx=6, pady=1)
-            pick_color = CYAN if pick == match["home"] else ORANGE if pick == match["away"] else MUTED
-            values = [
-                (source, 14, TEXT),
-                (f"{home}%", 7, CYAN),
-                (f"{draw}%", 7, MUTED),
-                (f"{away}%", 7, ORANGE),
-                (pick[:10], 10, pick_color),
-            ]
-            for value, width, color in values:
-                label = tk.Label(row, text=value, bg=ROW, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w")
-                label.pack(side="left", pady=4)
-                label.bind("<Button-1>", lambda _event, source_name=source: self.open_prediction_detail(source_name))
-            row.bind("<Button-1>", lambda _event, source_name=source: self.open_prediction_detail(source_name))
-
-        consensus = self.consensus_prediction(match)
-        summary = self.info_card(self.predictions_body)
-        tk.Label(summary, text="CONSENSUS", bg=PANEL_DARK, fg=CYAN, font=FONT_BOLD, anchor="w").pack(fill="x", padx=8, pady=(6, 2))
-        tk.Label(
-            summary,
-            text=f"{consensus['pick']}  |  confidence {consensus['confidence']}%  |  avg home/draw/away {consensus['home']} / {consensus['draw']} / {consensus['away']}",
-            bg=PANEL_DARK,
-            fg=TEXT,
-            font=FONT_SMALL,
-            anchor="w",
-            padx=8,
-            pady=7,
-        ).pack(fill="x")
-        tk.Label(
-            self.predictions_body,
-            text="Click a prediction source row for full source detail. Use the top button to return.",
-            bg=PANEL,
-            fg=MUTED,
-            font=FONT_SMALL,
-            anchor="w",
-        ).pack(fill="x", padx=6, pady=(0, 4))
-
-    def render_odds_detail(self, match, book_name):
-        top = tk.Frame(self.odds_body, bg=PANEL_DARK)
-        top.pack(fill="x", padx=6, pady=(6, 6))
-        tk.Button(
-            top,
-            text="< Back to books",
-            bg="#243244",
-            fg=TEXT,
-            activebackground="#334155",
-            activeforeground=TEXT,
-            relief="flat",
-            font=FONT_SMALL,
-            command=self.close_odds_detail,
-        ).pack(side="left")
-        tk.Label(top, text=f"{book_name} detailed markets", bg=PANEL_DARK, fg=ORANGE, font=FONT_BOLD).pack(side="left", padx=10)
-
-        headline = self.info_card(self.odds_body)
-        headline.pack(fill="x", padx=6, pady=(0, 6))
-        tk.Label(
-            headline,
-            text=f"{match['home']} vs {match['away']}  |  {match['league']}  |  {book_name}",
-            bg=PANEL_DARK,
-            fg=TEXT,
-            font=FONT_BOLD,
-            anchor="w",
-        ).pack(fill="x", padx=10, pady=(8, 4))
-        tk.Label(
-            headline,
-            text="Double Chance, Totals, BTTS, cards, corners, and live derivative prices for this bookmaker.",
-            bg=PANEL_DARK,
-            fg=MUTED,
-            font=FONT_SMALL,
-            anchor="w",
-        ).pack(fill="x", padx=10, pady=(0, 8))
-
-        header = tk.Frame(self.odds_body, bg=PANEL_DARK)
-        header.pack(fill="x", padx=6, pady=(0, 2))
-        for text, width in [("MARKET", 20), ("HOME/YES", 10), ("DRAW", 10), ("AWAY/NO", 10), ("NOTE", 18)]:
-            tk.Label(header, text=text, bg=PANEL_DARK, fg=ORANGE, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
-
-        for market, left, middle, right, note in self.odds_detail_rows(match, book_name):
-            row = tk.Frame(self.odds_body, bg=ROW)
-            row.pack(fill="x", padx=6, pady=1)
-            for value, width, color in [
-                (market, 20, TEXT),
-                (left, 10, CYAN),
-                (middle, 10, MUTED),
-                (right, 10, ORANGE),
-                (note, 18, GREEN if "value" in note.lower() else MUTED),
-            ]:
-                tk.Label(row, text=value, bg=ROW, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left", pady=4)
-
-    def render_prediction_detail(self, match, source_name):
-        top = tk.Frame(self.predictions_body, bg=PANEL_DARK)
-        top.pack(fill="x", padx=6, pady=(6, 6))
-        tk.Button(
-            top,
-            text="< Back to sources",
-            bg="#243244",
-            fg=TEXT,
-            activebackground="#334155",
-            activeforeground=TEXT,
-            relief="flat",
-            font=FONT_SMALL,
-            command=self.close_prediction_detail,
-        ).pack(side="left")
-        tk.Label(top, text=f"{source_name} prediction detail", bg=PANEL_DARK, fg=ORANGE, font=FONT_BOLD).pack(side="left", padx=10)
-
-        summary = self.info_card(self.predictions_body)
-        summary.pack(fill="x", padx=6, pady=(0, 6))
-        detail = self.prediction_detail_snapshot(match, source_name)
-        tk.Label(summary, text=detail["headline"], bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(fill="x", padx=10, pady=(8, 3))
-        tk.Label(summary, text=f"Confidence {detail['confidence']}%  |  model family {detail['model_family']}  |  update {detail['updated']}", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(fill="x", padx=10, pady=(0, 8))
-
-        self.section_title(self.predictions_body, "SOURCE MARKETS")
-        markets = self.info_card(self.predictions_body)
-        markets.pack(fill="x", padx=6, pady=(0, 4))
-        for label, value in detail["markets"]:
-            row = tk.Frame(markets, bg=PANEL_DARK)
-            row.pack(fill="x", padx=10, pady=2)
-            tk.Label(row, text=label, bg=PANEL_DARK, fg=CYAN, font=FONT_SMALL, width=18, anchor="w").pack(side="left")
-            tk.Label(row, text=value, bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, anchor="w").pack(side="left")
-
-        self.section_title(self.predictions_body, "WHY THIS SOURCE LEANS HERE")
-        reasons = self.info_card(self.predictions_body)
-        reasons.pack(fill="x", padx=6, pady=(0, 4))
-        for reason in detail["reasons"]:
-            tk.Label(reasons, text=f"+ {reason}", bg=PANEL_DARK, fg=GREEN, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", padx=10, pady=2)
-
-        self.section_title(self.predictions_body, "SOURCE WARNING FLAGS")
-        flags = self.info_card(self.predictions_body)
-        flags.pack(fill="x", padx=6, pady=(0, 4))
-        for flag in detail["flags"]:
-            tk.Label(flags, text=f"- {flag}", bg=PANEL_DARK, fg=RED, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", padx=10, pady=2)
-
-    def open_odds_detail(self, book_name):
-        self.selected_odds_book = book_name
-        self.render_market_sections()
-
-    def close_odds_detail(self):
-        self.selected_odds_book = None
-        self.render_market_sections()
-
-    def open_prediction_detail(self, source_name):
-        self.selected_prediction_source = source_name
-        self.render_market_sections()
-
-    def close_prediction_detail(self):
-        self.selected_prediction_source = None
-        self.render_market_sections()
-
-    def render_summary_tab(self, parent, match):
-        self.section_title(parent, "EVENTS")
-        events = self.match_events(match)
-        for minute, team, event, detail in events:
-            row = self.info_card(parent)
-            row.configure(highlightthickness=0)
-            tk.Label(row, text=minute, bg=PANEL_DARK, fg=MUTED, font=FONT_MONO_SMALL, width=8, anchor="w").pack(side="left", padx=10, pady=9)
-            tk.Label(row, text=event, bg=PANEL_DARK, fg=ORANGE if event == "GOAL" else YELLOW, font=FONT_BOLD, width=10).pack(side="left")
-            tk.Label(row, text=team, bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, width=16, anchor="w").pack(side="left")
-            tk.Label(row, text=detail, bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(side="left", fill="x", expand=True)
-
-        self.section_title(parent, "MATCH TRACKER")
-        tracker = self.info_card(parent)
-        tk.Label(
-            tracker,
-            text="Momentum: home pressure early, away response after the break. Tracker will accept live and historical event feeds.",
-            bg=PANEL_DARK,
-            fg=MUTED,
-            font=FONT_UI,
-            wraplength=620,
-            justify="left",
-            padx=12,
-            pady=12,
-        ).pack(fill="x")
-
-    def render_stats_tab(self, parent, match):
-        max_minute = self.stats_max_minute(match)
-
-        self.section_title(parent, "MATCH STATS TIMELINE")
-
-        summary = self.render_stat_summary_row(parent, self.stats_summary_percentages(match, max_minute))
-        summary_labels = {}
-        for box in summary.winfo_children()[0].winfo_children():
-            labels = [child for child in box.winfo_children() if isinstance(child, tk.Label)]
-            if len(labels) >= 2:
-                summary_labels[labels[0].cget("text")] = labels[1]
-
-        slider_card = self.info_card(parent)
-        slider_card.pack(fill="x", pady=(0, 8))
-        top = tk.Frame(slider_card, bg=PANEL_DARK)
-        top.pack(fill="x", padx=10, pady=(8, 2))
-        tk.Label(top, text="MATCH REPLAY", bg=PANEL_DARK, fg=CYAN, font=FONT_BOLD, anchor="w").pack(side="left")
-        minute_label = tk.Label(top, text="", bg=PANEL_DARK, fg=ORANGE, font=FONT_BOLD, anchor="e")
-        minute_label.pack(side="right")
-
-        scale_wrap = tk.Frame(slider_card, bg=PANEL_DARK)
-        scale_wrap.pack(fill="x", padx=10, pady=(0, 8))
-        tk.Label(scale_wrap, text="0'", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL).pack(side="left")
-        slider = tk.Scale(
-            scale_wrap,
-            from_=0,
-            to=max_minute,
-            orient="horizontal",
-            showvalue=False,
-            resolution=1,
-            bg=PANEL_DARK,
-            fg=TEXT,
-            troughcolor="#243244",
-            highlightthickness=0,
-            activebackground=ORANGE,
-            length=520,
-        )
-        slider.pack(side="left", fill="x", expand=True, padx=8)
-        tk.Label(scale_wrap, text=f"{max_minute}'", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL).pack(side="right")
-
-        helper = tk.Label(
-            slider_card,
-            text="Slide across the match to replay how the stat balance changed minute by minute.",
-            bg=PANEL_DARK,
-            fg=MUTED,
-            font=FONT_SMALL,
-            anchor="w",
-        )
-        helper.pack(fill="x", padx=10, pady=(0, 8))
-
-        markers = tk.Canvas(slider_card, bg=PANEL_DARK, height=26, highlightthickness=0)
-        markers.pack(fill="x", padx=10, pady=(0, 8))
-
-        controls = tk.Frame(slider_card, bg=PANEL_DARK)
-        controls.pack(fill="x", padx=10, pady=(0, 8))
-        self.button(controls, "Play", CYAN_DARK, self.play_replay, width=10, pady=7).pack(side="left", padx=(0, 6))
-        self.button(controls, "Pause", GRAY_BTN, self.pause_replay, width=10, pady=7).pack(side="left", padx=(0, 6))
-        self.button(controls, "Stop", RED_DARK, self.stop_replay, width=10, pady=7).pack(side="left")
-        tk.Label(
-            controls,
-            text="Play runs forward from the selected minute. Stop returns to where that replay started.",
-            bg=PANEL_DARK,
-            fg=MUTED,
-            font=FONT_SMALL,
-            anchor="w",
-        ).pack(side="left", fill="x", expand=True, padx=(12, 0))
-
-        stats_frame = tk.Frame(parent, bg=PANEL)
-        stats_frame.pack(fill="x")
-        events_frame = self.info_card(parent)
-        events_frame.pack(fill="x", pady=(8, 4))
-
-        def refresh_stats(value):
-            minute = int(float(value))
-            self.replay_minute = minute
-            minute_label.config(text=f"{minute:02d}'")
-            for label, home_pct, away_pct in self.stats_summary_percentages(match, minute, max_minute):
-                if label in summary_labels:
-                    summary_labels[label].config(text=f"{home_pct}% / {away_pct}%")
-            self.clear(stats_frame)
-            for label, home, away in self.match_stats_at_minute(match, minute, max_minute):
-                self.stat_bar(stats_frame, label, home, away)
-            self.render_replay_events(events_frame, match, minute, max_minute)
-
-        slider.configure(command=refresh_stats)
-        self.draw_timeline_markers(markers, match, max_minute)
-        markers.bind("<Configure>", lambda _event: self.draw_timeline_markers(markers, match, max_minute))
-        self.replay_slider = slider
-        self.replay_refresh = refresh_stats
-        self.replay_max_minute = max_minute
-        slider.set(self.current_replay_minute(match))
-        refresh_stats(slider.get())
-
-    def render_attack_tab(self, parent, match):
-        minute = self.current_replay_minute(match)
-        max_minute = self.stats_max_minute(match)
-        self.section_title(parent, "ATTACK PROFILE")
-        self.render_replay_state_note(parent, minute, max_minute)
-
-        self.render_stat_summary_row(parent, self.attack_summary_percentages(match, minute, max_minute))
-
-        self.section_title(parent, "ATTACKING OUTPUT")
-        attack_card = self.info_card(parent)
-        attack_card.pack(fill="x", pady=(0, 4))
-        for label, home, away in self.attack_stats(match, minute, max_minute):
-            self.stat_bar(attack_card, label, home, away)
-
-        self.section_title(parent, "ATTACK LEADERS")
-        self.render_player_panels(
-            parent,
-            "attack",
-            match["home"],
-            self.attack_players(match, match["home"], minute, max_minute),
-            match["away"],
-            self.attack_players(match, match["away"], minute, max_minute),
-            ORANGE,
-        )
-
-    def render_control_tab(self, parent, match):
-        minute = self.current_replay_minute(match)
-        max_minute = self.stats_max_minute(match)
-        self.section_title(parent, "CONTROL & TERRITORY")
-        self.render_replay_state_note(parent, minute, max_minute)
-
-        self.render_stat_summary_row(parent, self.control_summary_percentages(match, minute, max_minute))
-
-        self.section_title(parent, "CONTROL STATS")
-        control_card = self.info_card(parent)
-        control_card.pack(fill="x", pady=(0, 4))
-        for label, home, away in self.control_stats(match, minute, max_minute):
-            self.stat_bar(control_card, label, home, away)
-
-    def render_defense_tab(self, parent, match):
-        minute = self.current_replay_minute(match)
-        max_minute = self.stats_max_minute(match)
-        self.section_title(parent, "DEFENSE & DISCIPLINE")
-        self.render_replay_state_note(parent, minute, max_minute)
-
-        self.render_stat_summary_row(parent, self.defense_summary_percentages(match, minute, max_minute))
-
-        self.section_title(parent, "DEFENSIVE STATS")
-        defense_card = self.info_card(parent)
-        defense_card.pack(fill="x", pady=(0, 4))
-        for label, home, away in self.defense_stats(match, minute, max_minute):
-            self.stat_bar(defense_card, label, home, away)
-
-        self.section_title(parent, "DEFENSIVE LEADERS")
-        self.render_player_panels(
-            parent,
-            "defense",
-            match["home"],
-            self.defense_players(match, match["home"], minute, max_minute),
-            match["away"],
-            self.defense_players(match, match["away"], minute, max_minute),
-            CYAN,
-        )
-
-    def render_replay_events(self, parent, match, minute, max_minute):
-        self.clear(parent)
-        self.section_title(parent, "KEY MOMENTS TO THIS MINUTE")
-        shown = [event for event in self.timeline_events(match, max_minute) if event["minute"] <= minute]
+    def _render_replay_events(self, p, m, mn, maxm):
+        self._clear(p)
+        shown = [e for e in self._timeline_events(m,maxm) if e["minute"] <= mn]
         if not shown:
-            tk.Label(
-                parent,
-                text="No tracked moments yet at this point in the replay.",
-                bg=PANEL_DARK,
-                fg=MUTED,
-                font=FONT_SMALL,
-                anchor="w",
-                padx=10,
-                pady=10,
-            ).pack(fill="x")
+            tk.Label(p, text="No events yet at this point.",
+                bg=PANEL_DARK, fg=MUTED, font=FS, pady=6).pack(fill="x")
             return
+        for ev in shown[-5:]:
+            row = tk.Frame(p, bg=PANEL_DARK)
+            row.pack(fill="x", padx=8, pady=2)
+            tk.Label(row, text=ev["minute_text"], bg="#243244", fg=TEXT,
+                font=FM, width=5, pady=3).pack(side="left")
+            tk.Label(row, text=ev["event"], bg=PANEL_DARK,
+                fg=self._ev_color(ev["event"]), font=FB,
+                width=7, anchor="w").pack(side="left", padx=(6,8))
+            tk.Label(row, text=ev["team"], bg=PANEL_DARK, fg=TEXT,
+                font=FB, width=14, anchor="w").pack(side="left")
+            tk.Label(row, text=ev["detail"], bg=PANEL_DARK, fg=MUTED,
+                font=FS, anchor="w").pack(side="left", fill="x", expand=True)
 
-        for event in shown[-5:]:
-            row = tk.Frame(parent, bg=PANEL_DARK)
-            row.pack(fill="x", padx=10, pady=3)
-            pill = tk.Label(
-                row,
-                text=event["minute_text"],
-                bg="#243244",
-                fg=TEXT,
-                font=FONT_MONO_SMALL,
-                width=6,
-                pady=4,
-            )
-            pill.pack(side="left")
-            event_tag = tk.Label(
-                row,
-                text=event["event"],
-                bg=PANEL_DARK,
-                fg=self.event_color(event["event"]),
-                font=FONT_BOLD,
-                width=8,
-                anchor="w",
-            )
-            event_tag.pack(side="left", padx=(8, 10))
-            team = tk.Label(row, text=event["team"], bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, width=16, anchor="w")
-            team.pack(side="left")
-            detail = tk.Label(row, text=event["detail"], bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w")
-            detail.pack(side="left", fill="x", expand=True)
+    # ──────────────────────────────────────────
+    # Chat helpers
+    # ──────────────────────────────────────────
 
-    def render_lineups_tab(self, parent, match):
-        minute = self.current_replay_minute(match)
-        max_minute = self.stats_max_minute(match)
-        self.section_title(parent, "LINE-UPS & SHAPE")
-        self.render_replay_state_note(parent, minute, max_minute)
+    def _active_room(self, m):
+        return self.match_chat_room.setdefault(m["id"], "Open Room")
 
-        summary = self.info_card(parent)
-        summary_row = tk.Frame(summary, bg=PANEL_DARK)
-        summary_row.pack(fill="x", padx=10, pady=8)
-        for label, value in [
-            (match["home"], self.lineup_formation(match, "home", minute)),
-            ("Replay", f"{minute:02d}'"),
-            (match["away"], self.lineup_formation(match, "away", minute)),
-        ]:
-            box = tk.Frame(summary_row, bg="#243244")
-            box.pack(side="left", expand=True, fill="x", padx=3)
-            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
-            tk.Label(box, text=value, bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 6))
-
-        pitch_card = self.info_card(parent)
-        pitch = tk.Canvas(pitch_card, bg="#56761b", height=560, highlightthickness=0)
-        pitch.pack(fill="both", expand=True, padx=8, pady=8)
-        self.draw_side_pitch(pitch, match, minute)
-
-        notes = self.info_card(parent)
-        notes.pack(fill="x", pady=(0, 4))
-        tk.Label(notes, text="LINE-UP NOTES", bg=PANEL_DARK, fg=CYAN, font=FONT_BOLD, anchor="w").pack(fill="x", padx=10, pady=(8, 4))
-        for line in self.lineup_notes(match, minute):
-            tk.Label(notes, text=f"+ {line}", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", padx=10, pady=2)
-
-    def render_chat_tab(self, parent, match):
-        self.section_title(parent, "MATCH CHAT")
-        minute = self.current_replay_minute(match)
-        active_room = self.active_chat_room(match)
-        room = self.info_card(parent)
-        top = tk.Frame(room, bg=PANEL_DARK)
-        top.pack(fill="x", padx=10, pady=(8, 4))
-        tk.Label(
-            top,
-            text=f"{match['home']} vs {match['away']}  |  dedicated room",
-            bg=PANEL_DARK,
-            fg=TEXT,
-            font=FONT_BOLD,
-            anchor="w",
-        ).pack(side="left")
-        tk.Label(
-            top,
-            text=f"Replay {minute:02d}'",
-            bg=PANEL_DARK,
-            fg=ORANGE,
-            font=FONT_BOLD,
-            anchor="e",
-        ).pack(side="right")
-        tk.Label(
-            room,
-            text="This thread follows the match before, during, and after. Open takes, live reactions, and agent notes all stay attached to this match.",
-            bg=PANEL_DARK,
-            fg=MUTED,
-            font=FONT_SMALL,
-            anchor="w",
-            justify="left",
-            padx=10,
-            pady=2,
-        ).pack(fill="x", pady=(0, 8))
-
-        rooms = tk.Frame(parent, bg=PANEL)
-        rooms.pack(fill="x", pady=(0, 6))
-        for text in self.chat_rooms():
-            active = text == active_room
-            count = self.chat_room_count(match, text)
-            badge = self.chat_room_badge(match, text)
-            btn = tk.Button(
-                rooms,
-                text=f"{text} {count} {badge}".strip(),
-                bg=TEXT if active else PANEL_DARK,
-                fg=BG if active else MUTED,
-                activebackground=TEXT if active else "#243244",
-                activeforeground=BG if active else TEXT,
-                font=FONT_BOLD,
-                padx=14,
-                pady=6,
-                relief="flat",
-                command=lambda room_name=text, current=match: self.set_chat_room(current, room_name),
-            )
-            btn.pack(side="left", padx=(0, 8))
-
-        self.section_title(parent, "PREDICTION CHALLENGE")
-        self.render_prediction_challenge(parent, match)
-
-        self.section_title(parent, "COMMUNITY PROFILES")
-        self.render_profile_board(parent)
-
-        self.section_title(parent, "PLATFORM VS COMMUNITY")
-        self.render_platform_community_board(parent)
-
-        feed = self.info_card(parent)
-        feed.pack(fill="both", expand=True, pady=(0, 6))
-        chat_canvas = tk.Canvas(feed, bg=PANEL_DARK, height=360, highlightthickness=0)
-        chat_scroll = tk.Scrollbar(feed, orient="vertical", command=chat_canvas.yview)
-        chat_canvas.configure(yscrollcommand=chat_scroll.set)
-        chat_canvas.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
-        chat_scroll.pack(side="right", fill="y", padx=(0, 8), pady=8)
-
-        feed_body = tk.Frame(chat_canvas, bg=PANEL_DARK)
-        window_id = chat_canvas.create_window((0, 0), window=feed_body, anchor="nw")
-
-        def on_feed_configure(_event):
-            chat_canvas.configure(scrollregion=chat_canvas.bbox("all"))
-
-        def on_canvas_configure(event):
-            chat_canvas.itemconfigure(window_id, width=event.width)
-
-        feed_body.bind("<Configure>", on_feed_configure)
-        chat_canvas.bind("<Configure>", on_canvas_configure)
-
-        for item in self.chat_thread(match):
-            self.render_chat_message(feed_body, item)
-
-        compose = self.info_card(parent)
-        compose.pack(fill="x", pady=(0, 4))
-        row = tk.Frame(compose, bg=PANEL_DARK)
-        row.pack(fill="x", padx=10, pady=10)
-        entry = tk.Entry(
-            row,
-            textvariable=self.chat_message,
-            bg="#0f172a",
-            fg=TEXT,
-            insertbackground=TEXT,
-            relief="flat",
-            font=FONT_SMALL,
-        )
-        entry.pack(side="left", fill="x", expand=True, padx=(0, 8), ipady=7)
-        entry.bind("<Return>", lambda _event, current=match: self.post_chat_message(current))
-        self.button(row, "Post", CYAN_DARK, lambda current=match: self.post_chat_message(current), width=10, pady=7).pack(side="left", padx=(0, 6))
-        self.button(row, "Agent Note", ORANGE, lambda current=match: self.add_agent_note(current), width=12, pady=7).pack(side="left")
-
-    def render_table_tab(self, parent, match):
-        self.section_title(parent, f"{match['league']} TABLE")
-        table = self.info_card(parent)
-        header = tk.Frame(table, bg=PANEL_DARK)
-        header.pack(fill="x", padx=8, pady=(8, 4))
-        for text, width in [("#", 4), ("Team", 22), ("P", 5), ("GD", 6), ("PTS", 6), ("W", 5)]:
-            tk.Label(header, text=text, bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, width=width, anchor="w").pack(side="left")
-        for pos, team, played, gd, pts, wins in self.table_rows(match):
-            active = team in (match["home"], match["away"])
-            row = tk.Frame(table, bg="#263244" if active else PANEL_DARK)
-            row.pack(fill="x", padx=8, pady=1)
-            color = ORANGE if active else TEXT
-            for text, width, fg in [
-                (str(pos), 4, MUTED),
-                (team, 22, color),
-                (str(played), 5, MUTED),
-                (f"{gd:+}", 6, MUTED),
-                (str(pts), 6, TEXT),
-                (str(wins), 5, MUTED),
-            ]:
-                tk.Label(row, text=text, bg=row.cget("bg"), fg=fg, font=FONT_BOLD if active else FONT_SMALL, width=width, anchor="w").pack(side="left", pady=5)
-
-    def render_h2h_tab(self, parent, match):
-        self.section_title(parent, "HEAD TO HEAD")
-        filters = tk.Frame(parent, bg=PANEL)
-        filters.pack(fill="x", pady=(0, 8))
-        for text, active in [("H2H", True), (match["home"], False), (match["away"], False)]:
-            tk.Label(
-                filters,
-                text=text,
-                bg=TEXT if active else PANEL_DARK,
-                fg=BG if active else MUTED,
-                font=FONT_BOLD,
-                padx=14,
-                pady=6,
-            ).pack(side="left", padx=(0, 8))
-
-        for season, home, away, home_score, away_score in self.h2h_rows(match):
-            card = self.info_card(parent)
-            tk.Label(card, text=season, bg=PANEL_DARK, fg=CYAN, font=FONT_BOLD, anchor="w").pack(fill="x", padx=10, pady=(8, 2))
-            for team, score in [(home, home_score), (away, away_score)]:
-                row = tk.Frame(card, bg=PANEL_DARK)
-                row.pack(fill="x", padx=10, pady=2)
-                tk.Label(row, text=self.team_initials(team), bg=PANEL_DARK, fg=MUTED, font=FONT_MONO_SMALL, width=6).pack(side="left")
-                tk.Label(row, text=team, bg=PANEL_DARK, fg=TEXT, font=FONT_UI, anchor="w").pack(side="left", fill="x", expand=True)
-                tk.Label(row, text=str(score), bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, width=4).pack(side="right")
-
-    def chat_rooms(self):
-        return ["Open Room", "Value Talk", "Live Pulse", "Post-match"]
-
-    def chat_room_count(self, match, room_name):
-        rooms = self.match_chats.get(match["id"])
-        if not isinstance(rooms, dict):
-            rooms = self.seed_chat_rooms(match)
-            self.match_chats[match["id"]] = rooms
-        return len(rooms.get(room_name, []))
-
-    def chat_room_badge(self, match, room_name):
-        count = self.chat_room_count(match, room_name)
-        if room_name == "Live Pulse" and match["status"] == "LIVE":
-            return "LIVE"
-        if count >= 5:
-            return "HOT"
-        if room_name == "Post-match" and self.match_finished(match):
-            return "FT"
-        return ""
-
-    def active_chat_room(self, match):
-        if match["id"] not in self.match_chat_room:
-            self.match_chat_room[match["id"]] = "Open Room"
-        return self.match_chat_room[match["id"]]
-
-    def set_chat_room(self, match, room_name):
-        self.match_chat_room[match["id"]] = room_name
+    def _set_room(self, m, room):
+        self.match_chat_room[m["id"]] = room
         self.chat_message.set("")
-        self.render_chat_preview()
+        self._render_chat_preview()
         if self.tab_name.get() == "Chat":
-            self.render_tab()
+            self._render_tab()
 
-    def chat_thread(self, match):
-        if match["id"] not in self.match_chats or not isinstance(self.match_chats[match["id"]], dict):
-            self.match_chats[match["id"]] = self.seed_chat_rooms(match)
-        room = self.active_chat_room(match)
-        return self.match_chats[match["id"]].setdefault(room, [])
+    def _chat_thread(self, m):
+        if m["id"] not in self.match_chats or not isinstance(self.match_chats[m["id"]], dict):
+            self.match_chats[m["id"]] = {
+                "Open Room":  self._seed_thread(m,"Open Room"),
+                "Value Talk": self._seed_thread(m,"Value Talk"),
+                "Live Pulse": self._seed_thread(m,"Live Pulse"),
+                "Post-match": self._seed_thread(m,"Post-match"),
+            }
+        return self.match_chats[m["id"]].setdefault(self._active_room(m), [])
 
-    def seed_chat_rooms(self, match):
-        minute = self.stats_reference_minute(match)
-        return {
-            "Open Room": self.seed_chat_thread(match, "Open Room", minute),
-            "Value Talk": self.seed_chat_thread(match, "Value Talk", minute),
-            "Live Pulse": self.seed_chat_thread(match, "Live Pulse", minute),
-            "Post-match": self.seed_chat_thread(match, "Post-match", minute),
-        }
+    def _chat_thread_room(self, m, room):
+        if m["id"] not in self.match_chats or not isinstance(self.match_chats[m["id"]], dict):
+            self._chat_thread(m)
+        return self.match_chats[m["id"]].get(room, [])
 
-    def seed_chat_thread(self, match, room_name, minute):
-        minute = self.stats_reference_minute(match)
-        status_text = "pre-match room is open" if match["status"] == "UP" else f"live room rolling at {minute:02d}'"
+    def _seed_thread(self, m, room):
+        mn  = self._ref_minute(m)
+        st  = "pre-match" if m.get("status")=="UP" else f"live at {mn:02d}'"
         seeds = {
             "Open Room": [
-                {
-                    "author": "EdgeAgent",
-                    "tag": "agent",
-                    "time": self.chat_time_label(match),
-                    "text": f"{match['home']} vs {match['away']} {status_text}. Market edge is {match['edge']:+.1f}; good room to track price vs momentum.",
-                },
-                {
-                    "author": "ValueHunter",
-                    "tag": "community",
-                    "time": self.chat_time_label(match),
-                    "text": f"I want to see whether {match['away']} keeps the same pressure level if this reaches the last 20 minutes.",
-                },
-                {
-                    "author": "MatchPulse",
-                    "tag": "community",
-                    "time": self.chat_time_label(match),
-                    "text": "Thread stays attached to this match before kickoff, during live play, and after full-time.",
-                },
+                {"author":"EdgeAgent","tag":"agent",
+                 "time":f"{mn:02d}'",
+                 "text":f"{m.get('home','')} vs {m.get('away','')} {st}. Edge {m.get('edge',0):+.1f}."},
+                {"author":"ValueHunter","tag":"community","time":f"{mn:02d}'",
+                 "text":f"Watching whether {m.get('away','')} keeps pressure in last 20."},
             ],
             "Value Talk": [
-                {
-                    "author": "EdgeAgent",
-                    "tag": "agent",
-                    "time": self.chat_time_label(match),
-                    "text": f"Value room open. Best angle right now is how the {match['edge']:+.1f} edge compares to available book prices.",
-                },
-                {
-                    "author": "PriceWatcher",
-                    "tag": "community",
-                    "time": self.chat_time_label(match),
-                    "text": "I only care whether the line is behind the state of the match. Everything else is noise until price moves.",
-                },
+                {"author":"EdgeAgent","tag":"agent","time":f"{mn:02d}'",
+                 "text":f"Value room open. Edge {m.get('edge',0):+.1f} vs book prices."},
             ],
             "Live Pulse": [
-                {
-                    "author": "EdgeAgent",
-                    "tag": "agent",
-                    "time": self.chat_time_label(match),
-                    "text": f"Live pulse room at {minute:02d}'. Use this for momentum, pressure swings, and replay-minute reactions.",
-                },
-                {
-                    "author": "PulseCheck",
-                    "tag": "community",
-                    "time": self.chat_time_label(match),
-                    "text": "The room should follow the replay minute so people are arguing about the same state, not different moments.",
-                },
+                {"author":"EdgeAgent","tag":"agent","time":f"{mn:02d}'",
+                 "text":f"Live pulse at {mn:02d}'. Track momentum and pressure swings here."},
             ],
             "Post-match": [
-                {
-                    "author": "EdgeAgent",
-                    "tag": "agent",
-                    "time": self.chat_time_label(match),
-                    "text": "Post-match room is ready. Good place for reviewing what the market, replay, and final result actually said.",
-                },
+                {"author":"EdgeAgent","tag":"agent","time":f"{mn:02d}'",
+                 "text":"Post-match room ready for review and analysis."},
             ],
         }
-        return seeds.get(room_name, seeds["Open Room"])
+        return seeds.get(room, seeds["Open Room"])
 
-    def render_chat_message(self, parent, item):
-        bubble = tk.Frame(parent, bg=PANEL_DARK)
-        bubble.pack(fill="x", padx=10, pady=4)
-        top = tk.Frame(bubble, bg=PANEL_DARK)
+    def _chat_bubble(self, p, item):
+        b = tk.Frame(p, bg=PANEL_DARK)
+        b.pack(fill="x", padx=8, pady=3)
+        top = tk.Frame(b, bg=PANEL_DARK)
         top.pack(fill="x")
-        color = ORANGE if item["tag"] == "agent" else GREEN if item["tag"] == "you" else CYAN
-        tk.Label(top, text=item["author"], bg=PANEL_DARK, fg=color, font=FONT_BOLD, anchor="w").pack(side="left")
-        tk.Label(top, text=item["time"], bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="e").pack(side="right")
-        tk.Label(
-            bubble,
-            text=item["text"],
-            bg=PANEL_DARK,
-            fg=TEXT,
-            font=FONT_SMALL,
-            anchor="w",
-            justify="left",
-            wraplength=720,
-        ).pack(fill="x", pady=(2, 0))
-        tk.Frame(bubble, bg="#243244", height=1).pack(fill="x", pady=(8, 0))
+        c = ORANGE if item["tag"]=="agent" else GREEN if item["tag"]=="you" else CYAN
+        tk.Label(top, text=item["author"], bg=PANEL_DARK, fg=c, font=FB, anchor="w").pack(side="left")
+        tk.Label(top, text=item.get("time",""), bg=PANEL_DARK, fg=MUTED, font=FS, anchor="e").pack(side="right")
+        tk.Label(b, text=item["text"], bg=PANEL_DARK, fg=TEXT,
+            font=FS, anchor="w", justify="left", wraplength=680).pack(fill="x", pady=(1,0))
+        tk.Frame(b, bg="#243244", height=1).pack(fill="x", pady=(6,0))
 
-    def render_prediction_challenge(self, parent, match):
-        board = self.info_card(parent)
-        board.pack(fill="x", pady=(0, 6))
-        entries = self.challenge_entries(match)
-        leader = entries[0]
-
-        top = tk.Frame(board, bg=PANEL_DARK)
-        top.pack(fill="x", padx=10, pady=(8, 6))
-        tk.Label(top, text="Beat The Platform", bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(side="left")
-        tk.Label(top, text=f"Leader: {leader['name']}  |  {leader['accuracy']}%", bg=PANEL_DARK, fg=ORANGE, font=FONT_SMALL, anchor="e").pack(side="right")
-
-        score_row = tk.Frame(board, bg=PANEL_DARK)
-        score_row.pack(fill="x", padx=10, pady=(0, 8))
-        platform = self.platform_challenge_entry(match)
-        for label, value in [
-            ("Platform", f"{platform['pick']}  {platform['confidence']}%"),
-            ("Guests", str(len([row for row in entries if row["tag"] != "platform"]))),
-            ("Market", self.guest_market.get()),
-        ]:
-            cell = tk.Frame(score_row, bg="#243244")
-            cell.pack(side="left", expand=True, fill="x", padx=3)
-            tk.Label(cell, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(5, 2))
-            tk.Label(cell, text=value, bg="#243244", fg=TEXT, font=FONT_BOLD).pack(pady=(0, 6))
-
-        form = tk.Frame(board, bg=PANEL_DARK)
-        form.pack(fill="x", padx=10, pady=(0, 8))
-        tk.Label(form, text="Handle", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL).pack(side="left")
-        entry = tk.Entry(
-            form,
-            textvariable=self.guest_handle,
-            bg="#0f172a",
-            fg=TEXT,
-            insertbackground=TEXT,
-            relief="flat",
-            font=FONT_SMALL,
-            width=14,
-        )
-        entry.pack(side="left", padx=(6, 10), ipady=5)
-
-        market_frame = tk.Frame(form, bg=PANEL_DARK)
-        market_frame.pack(side="left", padx=(0, 10))
-        for market in ("1X2", "O/U 2.5", "BTTS"):
-            active = self.guest_market.get() == market
-            tk.Button(
-                market_frame,
-                text=market,
-                bg=TEXT if active else "#243244",
-                fg=BG if active else MUTED,
-                activebackground=TEXT if active else "#334155",
-                activeforeground=BG if active else TEXT,
-                relief="flat",
-                font=FONT_SMALL,
-                padx=10,
-                pady=5,
-                command=lambda value=market, current=match: self.set_guest_market(value, current),
-            ).pack(side="left", padx=3)
-
-        pick_frame = tk.Frame(board, bg=PANEL_DARK)
-        pick_frame.pack(fill="x", padx=10, pady=(0, 8))
-        for option in self.challenge_pick_options(match):
-            active = self.guest_pick.get() == option
-            tk.Button(
-                pick_frame,
-                text=option,
-                bg=ORANGE if active else "#243244",
-                fg=TEXT if active else MUTED,
-                activebackground=ORANGE,
-                activeforeground=TEXT,
-                relief="flat",
-                font=FONT_SMALL,
-                padx=12,
-                pady=6,
-                command=lambda value=option: self.guest_pick.set(value),
-            ).pack(side="left", padx=(0, 6))
-        self.button(
-            pick_frame,
-            "Submit Pick",
-            CYAN_DARK,
-            lambda current=match: self.submit_guest_prediction(current),
-            width=12,
-            pady=7,
-        ).pack(side="right")
-
-        header = tk.Frame(board, bg=PANEL_DARK)
-        header.pack(fill="x", padx=10, pady=(0, 2))
-        for text, width in [("#", 4), ("NAME", 14), ("MARKET", 12), ("PICK", 14), ("CONF", 8), ("ACC", 8)]:
-            tk.Label(header, text=text, bg=PANEL_DARK, fg=ORANGE, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
-
-        for idx, row in enumerate(entries[:6], start=1):
-            line = tk.Frame(board, bg=ROW if row["tag"] != "platform" else ROW_ALT)
-            line.pack(fill="x", padx=10, pady=1)
-            name_color = ORANGE if row["tag"] == "platform" else GREEN if row["tag"] == "you" else TEXT
-            for value, width, color in [
-                (str(idx), 4, MUTED),
-                (row["name"], 14, name_color),
-                (row["market"], 12, CYAN),
-                (row["pick"], 14, TEXT),
-                (f"{row['confidence']}%", 8, ORANGE),
-                (f"{row['accuracy']}%", 8, GREEN),
-            ]:
-                tk.Label(line, text=value, bg=line.cget("bg"), fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left", pady=4)
-
-    def render_profile_board(self, parent):
-        card = self.info_card(parent)
-        card.pack(fill="x", pady=(0, 6))
-        highlight = tk.Frame(card, bg=PANEL_DARK)
-        highlight.pack(fill="x", padx=10, pady=(8, 8))
-        featured = [
-            self.profile_lookup("Edge Platform"),
-            self.top_guest_profile(),
-            self.profile_lookup(self.guest_handle.get().strip() or "Guest001"),
-        ]
-        labels = ["Platform", "Top Guest", "Your Handle"]
-        for idx, profile in enumerate(featured):
-            box = tk.Frame(highlight, bg="#243244")
-            box.pack(side="left", expand=True, fill="x", padx=3)
-            tk.Label(box, text=labels[idx], bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
-            tk.Label(box, text=profile["name"], bg="#243244", fg=ORANGE if profile["tag"] == "platform" else GREEN if profile["tag"] == "you" else TEXT, font=FONT_BOLD).pack()
-            tk.Label(box, text=f"{profile['badge']}  |  streak {profile['streak']}", bg="#243244", fg=CYAN, font=FONT_SMALL).pack(pady=(2, 2))
-            tk.Label(box, text=f"hit {profile['hit_rate']}%  |  open {profile['open']}", bg="#243244", fg=TEXT, font=FONT_SMALL).pack(pady=(0, 6))
-
-        header = tk.Frame(card, bg=PANEL_DARK)
-        header.pack(fill="x", padx=10, pady=(8, 4))
-        for text, width in [("USER", 14), ("W-L-P", 10), ("HIT", 8), ("OPEN", 8), ("BEST", 14), ("BADGE", 10)]:
-            tk.Label(header, text=text, bg=PANEL_DARK, fg=ORANGE, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
-
-        for row in self.profile_rows()[:6]:
-            line = tk.Frame(card, bg=ROW if row["tag"] != "platform" else ROW_ALT)
-            line.pack(fill="x", padx=10, pady=1)
-            name_color = ORANGE if row["tag"] == "platform" else GREEN if row["tag"] == "you" else TEXT
-            values = [
-                (row["name"], 14, name_color),
-                (f"{row['wins']}-{row['losses']}-{row['pushes']}", 10, TEXT),
-                (f"{row['hit_rate']}%", 8, GREEN),
-                (str(row["open"]), 8, MUTED),
-                (row["best_market"], 14, CYAN),
-                (row["badge"], 10, ORANGE if row["badge"] == "Crown" else CYAN if row["badge"] == "Hot" else MUTED),
-            ]
-            for value, width, color in values:
-                tk.Label(line, text=value, bg=line.cget("bg"), fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left", pady=4)
-
-    def render_platform_community_board(self, parent):
-        card = self.info_card(parent)
-        card.pack(fill="x", pady=(0, 6))
-        summary = self.platform_vs_community_summary()
-        top = tk.Frame(card, bg=PANEL_DARK)
-        top.pack(fill="x", padx=10, pady=(8, 6))
-        tk.Label(top, text="Long-run settled score", bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(side="left")
-        tk.Label(top, text=f"{summary['winner']} on top", bg=PANEL_DARK, fg=ORANGE, font=FONT_SMALL, anchor="e").pack(side="right")
-
-        row = tk.Frame(card, bg=PANEL_DARK)
-        row.pack(fill="x", padx=10, pady=(0, 8))
-        for label, value, color in [
-            ("Platform Hit", f"{summary['platform_hit']}%", ORANGE),
-            ("Community Hit", f"{summary['community_hit']}%", CYAN),
-            ("Settled Picks", str(summary["settled"]), GREEN),
-            ("Open Picks", str(summary["open"]), MUTED),
-        ]:
-            cell = tk.Frame(row, bg="#243244")
-            cell.pack(side="left", expand=True, fill="x", padx=3)
-            tk.Label(cell, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(5, 2))
-            tk.Label(cell, text=value, bg="#243244", fg=color, font=FONT_BOLD).pack(pady=(0, 6))
-
-        notes = tk.Frame(card, bg=PANEL_DARK)
-        notes.pack(fill="x", padx=10, pady=(0, 8))
-        for text in [
-            f"Platform settled record: {summary['platform_wins']}-{summary['platform_losses']}-{summary['platform_pushes']}",
-            f"Community settled record: {summary['community_wins']}-{summary['community_losses']}-{summary['community_pushes']}",
-            "Open picks stay out of hit-rate scoring until the match is settled.",
-        ]:
-            tk.Label(notes, text=f"+ {text}", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(fill="x", pady=1)
-
-    def chat_time_label(self, match):
-        minute = self.current_replay_minute(match)
-        if match["status"] == "UP" and minute == 0:
-            return "Pre | now"
-        return f"{minute:02d}' | now"
-
-    def seed_challenge_history(self):
-        return [
-            self.make_history_record("Edge Platform", "platform", "1X2", "Liverpool", 45, 1, 1, 1),
-            self.make_history_record("Edge Platform", "platform", "O/U 2.5", "Under 2.5", 58, 0, 0, 1),
-            self.make_history_record("Edge Platform", "platform", "BTTS", "Yes", 61, 2, 1, 1),
-            self.make_history_record("SharpTom", "guest", "1X2", "Liverpool", 58, 1, 1, 1),
-            self.make_history_record("SharpTom", "guest", "BTTS", "No", 51, 0, 0, 1),
-            self.make_history_record("OddsMuse", "guest", "O/U 2.5", "Under 2.5", 54, 0, 0, 1),
-            self.make_history_record("OddsMuse", "guest", "1X2", "Draw", 31, 1, 1, 1),
-            self.make_history_record("PulseRita", "guest", "BTTS", "Yes", 61, 2, 1, 1),
-            self.make_history_record("PulseRita", "guest", "1X2", "Home", 44, 0, 2, 2),
-            self.make_history_record("Guest001", "you", "1X2", "Man City", 52, 1, 0, 0),
-            self.make_history_record("Guest001", "you", "O/U 2.5", "Over 2.5", 57, 2, 1, 1),
-        ]
-
-    def make_history_record(self, name, tag, market, pick, confidence, home_score, away_score, match_id):
-        result = self.settle_pick(market, pick, home_score, away_score)
-        return {
-            "name": name,
-            "tag": tag,
-            "market": market,
-            "pick": pick,
-            "confidence": confidence,
-            "home_score": home_score,
-            "away_score": away_score,
-            "match_id": match_id,
-            "status": "Settled",
-            "result": result,
-        }
-
-    def challenge_entries(self, match):
-        if match["id"] not in self.match_challenges:
-            self.match_challenges[match["id"]] = self.seed_challenge_entries(match)
-        rows = [self.platform_challenge_entry(match)] + self.match_challenges[match["id"]]
-        return sorted(rows, key=lambda item: (item["accuracy"], item["confidence"]), reverse=True)
-
-    def seed_challenge_entries(self, match):
-        return [
-            {"name": "SharpTom", "tag": "guest", "market": "1X2", "pick": match["away"], "confidence": 58, "accuracy": 67},
-            {"name": "OddsMuse", "tag": "guest", "market": "O/U 2.5", "pick": "Under 2.5", "confidence": 54, "accuracy": 63},
-            {"name": "PulseRita", "tag": "guest", "market": "BTTS", "pick": "Yes", "confidence": 61, "accuracy": 65},
-        ]
-
-    def platform_challenge_entry(self, match):
-        snapshot = self.analysis_snapshot(match)
-        return {
-            "name": "Edge Platform",
-            "tag": "platform",
-            "market": "1X2",
-            "pick": snapshot["market"].split("|")[-1].replace("pick", "").strip(),
-            "confidence": snapshot["confidence"],
-            "accuracy": self.profile_lookup("Edge Platform")["hit_rate"],
-        }
-
-    def set_guest_market(self, value, match):
-        self.guest_market.set(value)
-        options = self.challenge_pick_options(match)
-        if self.guest_pick.get() not in options:
-            self.guest_pick.set(options[0])
-        if self.tab_name.get() == "Chat":
-            self.render_tab()
-
-    def challenge_pick_options(self, match):
-        market = self.guest_market.get()
-        if market == "O/U 2.5":
-            return ["Over 2.5", "Under 2.5"]
-        if market == "BTTS":
-            return ["Yes", "No"]
-        return [match["home"], "Draw", match["away"]]
-
-    def submit_guest_prediction(self, match):
-        handle = self.guest_handle.get().strip() or "Guest001"
-        pick = self.guest_pick.get().strip()
-        if not pick:
-            options = self.challenge_pick_options(match)
-            pick = options[0]
-            self.guest_pick.set(pick)
-        rows = self.match_challenges.setdefault(match["id"], self.seed_challenge_entries(match))
-        confidence = self.challenge_confidence(match, pick)
-        accuracy = max(51, min(79, confidence + 8 - (match["id"] % 4)))
-        rows.append(
-            {
-                "name": handle,
-                "tag": "you",
-                "market": self.guest_market.get(),
-                "pick": pick,
-                "confidence": confidence,
-                "accuracy": accuracy,
-            }
-        )
-        self.challenge_history.append(
-            {
-                "name": handle,
-                "tag": "you",
-                "market": self.guest_market.get(),
-                "pick": pick,
-                "confidence": confidence,
-                "home_score": match["home_score"],
-                "away_score": match["away_score"],
-                "match_id": match["id"],
-                "status": "Live" if match["status"] == "LIVE" else "Pending",
-                "result": "Open",
-            }
-        )
-        self.tracker_status.config(text=f"{handle} joined the challenge on {match['home']} vs {match['away']}.", fg=GREEN)
-        self.render_chat_preview()
-        if self.tab_name.get() == "Chat":
-            self.render_tab()
-
-    def challenge_confidence(self, match, pick):
-        consensus = self.consensus_prediction(match)
-        if pick == match["home"]:
-            return consensus["home"]
-        if pick == match["away"]:
-            return consensus["away"]
-        if pick == "Draw":
-            return consensus["draw"]
-        if pick == "Over 2.5":
-            return min(78, int(round(match["over_price"])))
-        if pick == "Under 2.5":
-            return min(78, int(round(match["under_price"])))
-        if pick == "Yes":
-            return min(76, int(round((match["home_avg"] + match["away_avg"]) * 18)))
-        return 100 - min(76, int(round((match["home_avg"] + match["away_avg"]) * 18)))
-
-    def settle_pick(self, market, pick, home_score, away_score):
-        if market == "1X2":
-            outcome = "Draw" if home_score == away_score else "Home" if home_score > away_score else "Away"
-            home_teams = {match["home"] for match in MATCHES}
-            away_teams = {match["away"] for match in MATCHES}
-            if pick == "Draw":
-                mapped_pick = "Draw"
-            elif pick == "Away" or pick in away_teams:
-                mapped_pick = "Away"
-            else:
-                mapped_pick = "Home"
-            return "W" if mapped_pick == outcome else "L"
-        if market == "O/U 2.5":
-            total = home_score + away_score
-            outcome = "Over 2.5" if total >= 3 else "Under 2.5"
-            return "W" if pick == outcome else "L"
-        if market == "BTTS":
-            outcome = "Yes" if home_score > 0 and away_score > 0 else "No"
-            return "W" if pick == outcome else "L"
-        return "P"
-
-    def profile_rows(self):
-        buckets = {}
-        for item in self.challenge_history:
-            row = buckets.setdefault(
-                item["name"],
-                {"name": item["name"], "tag": item["tag"], "wins": 0, "losses": 0, "pushes": 0, "open": 0, "best_market": item["market"], "history": []},
-            )
-            row["history"].append(item["result"])
-            if item["status"] == "Settled":
-                if item["result"] == "W":
-                    row["wins"] += 1
-                elif item["result"] == "L":
-                    row["losses"] += 1
-                else:
-                    row["pushes"] += 1
-            else:
-                row["open"] += 1
-
-        rows = []
-        for row in buckets.values():
-            settled = row["wins"] + row["losses"] + row["pushes"]
-            hit_rate = 0 if settled == 0 else int(round((row["wins"] / max(1, settled)) * 100))
-            row["hit_rate"] = hit_rate
-            row["streak"] = self.profile_streak(row["history"])
-            row["badge"] = self.profile_badge(row)
-            rows.append(row)
-        return sorted(rows, key=lambda item: (item["hit_rate"], item["wins"]), reverse=True)
-
-    def profile_lookup(self, name):
-        for row in self.profile_rows():
-            if row["name"] == name:
-                return row
-        return {"name": name, "tag": "guest", "wins": 0, "losses": 0, "pushes": 0, "open": 0, "best_market": "1X2", "hit_rate": 0, "streak": "0", "badge": "New"}
-
-    def top_guest_profile(self):
-        guests = [row for row in self.profile_rows() if row["tag"] != "platform"]
-        return guests[0] if guests else self.profile_lookup("Guest001")
-
-    def profile_streak(self, history):
-        streak_type = None
-        streak_count = 0
-        for result in reversed(history):
-            if result not in ("W", "L"):
-                continue
-            if streak_type is None:
-                streak_type = result
-                streak_count = 1
-            elif result == streak_type:
-                streak_count += 1
-            else:
-                break
-        if streak_type is None:
-            return "0"
-        return f"{streak_type}{streak_count}"
-
-    def profile_badge(self, row):
-        if row["tag"] == "platform":
-            return "Crown"
-        if row["streak"].startswith("W") and int(row["streak"][1:] or "0") >= 2:
-            return "Hot"
-        if row["open"] >= 2:
-            return "Active"
-        return "New"
-
-    def platform_vs_community_summary(self):
-        platform = {"wins": 0, "losses": 0, "pushes": 0, "open": 0}
-        community = {"wins": 0, "losses": 0, "pushes": 0, "open": 0}
-        for item in self.challenge_history:
-            bucket = platform if item["tag"] == "platform" else community
-            if item["status"] == "Settled":
-                if item["result"] == "W":
-                    bucket["wins"] += 1
-                elif item["result"] == "L":
-                    bucket["losses"] += 1
-                else:
-                    bucket["pushes"] += 1
-            else:
-                bucket["open"] += 1
-
-        platform_settled = platform["wins"] + platform["losses"] + platform["pushes"]
-        community_settled = community["wins"] + community["losses"] + community["pushes"]
-        platform_hit = 0 if platform_settled == 0 else int(round((platform["wins"] / max(1, platform_settled)) * 100))
-        community_hit = 0 if community_settled == 0 else int(round((community["wins"] / max(1, community_settled)) * 100))
-        winner = "Platform" if platform_hit >= community_hit else "Community"
-        return {
-            "platform_hit": platform_hit,
-            "community_hit": community_hit,
-            "platform_wins": platform["wins"],
-            "platform_losses": platform["losses"],
-            "platform_pushes": platform["pushes"],
-            "community_wins": community["wins"],
-            "community_losses": community["losses"],
-            "community_pushes": community["pushes"],
-            "settled": platform_settled + community_settled,
-            "open": platform["open"] + community["open"],
-            "winner": winner,
-        }
-
-    def match_finished(self, match):
-        return match.get("status") in ("FT", "FINISHED") or match.get("minute", 0) >= 90 and match.get("status") != "UP"
-
-    def settle_match_challenges(self, match):
-        changed = False
-        for item in self.challenge_history:
-            if item["match_id"] != match["id"] or item["status"] == "Settled":
-                continue
-            item["home_score"] = match["home_score"]
-            item["away_score"] = match["away_score"]
-            item["result"] = self.settle_pick(item["market"], item["pick"], match["home_score"], match["away_score"])
-            item["status"] = "Settled"
-            changed = True
-        return changed
-
-    def render_chat_preview(self):
-        if self.chat_preview_body is None:
-            return
-        self.clear(self.chat_preview_body)
-        match = self.current_match
-        room = self.active_chat_room(match)
-        thread = self.chat_thread(match)
-        latest = thread[-3:]
-        challenge = self.challenge_entries(match)[:3]
-        header = tk.Frame(self.chat_preview_body, bg=PANEL_DARK)
-        header.pack(fill="x", padx=8, pady=(8, 6))
-        tk.Label(header, text=f"{match['home']} vs {match['away']}", bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(fill="x")
-        tk.Label(header, text=room, bg=PANEL_DARK, fg=CYAN, font=FONT_SMALL, anchor="w").pack(fill="x")
-        for item in latest:
-            row = tk.Frame(self.chat_preview_body, bg=PANEL_DARK)
-            row.pack(fill="x", padx=8, pady=3)
-            color = ORANGE if item["tag"] == "agent" else GREEN if item["tag"] == "you" else CYAN
-            tk.Label(row, text=item["author"], bg=PANEL_DARK, fg=color, font=FONT_SMALL, width=10, anchor="w").pack(side="left")
-            tk.Label(
-                row,
-                text=item["text"][:54] + ("..." if len(item["text"]) > 54 else ""),
-                bg=PANEL_DARK,
-                fg=MUTED,
-                font=FONT_SMALL,
-                anchor="w",
-                justify="left",
-            ).pack(side="left", fill="x", expand=True)
-        tk.Label(
-            self.chat_preview_body,
-            text="Challenge",
-            bg=PANEL_DARK,
-            fg=ORANGE,
-            font=FONT_BOLD,
-            anchor="w",
-            padx=8,
-            pady=6,
-        ).pack(fill="x")
-        for idx, item in enumerate(challenge, start=1):
-            row = tk.Frame(self.chat_preview_body, bg=PANEL_DARK)
-            row.pack(fill="x", padx=8, pady=2)
-            tk.Label(row, text=str(idx), bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, width=3, anchor="w").pack(side="left")
-            tk.Label(row, text=item["name"], bg=PANEL_DARK, fg=ORANGE if item["tag"] == "platform" else GREEN if item["tag"] == "you" else TEXT, font=FONT_SMALL, width=14, anchor="w").pack(side="left")
-            tk.Label(row, text=item["pick"], bg=PANEL_DARK, fg=CYAN, font=FONT_SMALL, width=12, anchor="w").pack(side="left")
-            tk.Label(row, text=f"{item['accuracy']}%", bg=PANEL_DARK, fg=GREEN, font=FONT_SMALL, width=7, anchor="e").pack(side="right")
-        tk.Label(
-            self.chat_preview_body,
-            text="Open the Chat tab for the full room and posting controls.",
-            bg=PANEL_DARK,
-            fg=MUTED,
-            font=FONT_SMALL,
-            anchor="w",
-            padx=8,
-            pady=6,
-        ).pack(fill="x")
-
-    def post_chat_message(self, match):
+    def _post_chat(self, m):
         text = self.chat_message.get().strip()
-        if not text:
-            self.tracker_status.config(text="Type a message for this match thread first.", fg=MUTED)
-            return
-        thread = self.chat_thread(match)
-        thread.append({"author": "You", "tag": "you", "time": self.chat_time_label(match), "text": text})
-        thread.append(self.agent_chat_reply(match, text))
+        if not text: return
+        thread = self._chat_thread(m)
+        mn = self._cur_minute(m)
+        thread.append({"author":"You","tag":"you","time":f"{mn:02d}'","text":text})
+        thread.append({"author":"EdgeAgent","tag":"agent","time":f"{mn:02d}'",
+            "text":f"EdgeAgent: noted at {mn:02d}' — keep the debate tied to replay minute and real edge."})
         self.chat_message.set("")
-        self.tracker_status.config(text=f"Posted into {match['home']} vs {match['away']} chat.", fg=GREEN)
-        self.render_chat_preview()
+        self._render_chat_preview()
         if self.tab_name.get() == "Chat":
-            self.render_tab()
-
-    def add_agent_note(self, match):
-        thread = self.chat_thread(match)
-        thread.append(self.agent_chat_reply(match, "agent note"))
-        self.tracker_status.config(text=f"Agent note added to {match['home']} vs {match['away']} chat.", fg=CYAN)
-        self.render_chat_preview()
-        if self.tab_name.get() == "Chat":
-            self.render_tab()
-
-    def agent_chat_reply(self, match, prompt_text):
-        minute = self.current_replay_minute(match)
-        lower = prompt_text.lower()
-        if "shot" in lower or "xg" in lower:
-            text = f"EdgeAgent: at {minute:02d}' the shot/xG angle still leans toward the {self.resolve_quick_find_target('shots')[1]} view. Quick Find can jump there fast."
-        elif "line" in lower or "odds" in lower or "price" in lower:
-            text = f"EdgeAgent: the book side is still worth checking against the current room take. Right panel has the discrepancy view, and this thread can debate whether it is real or noise."
-        elif "lineup" in lower or "sub" in lower:
-            text = f"EdgeAgent: lineup shape at {minute:02d}' is live in the Line-ups tab now, and sub rings highlight the changes."
-        else:
-            text = f"EdgeAgent: room note for {match['home']} vs {match['away']} at {minute:02d}' - keep the debate tied to replay minute, market move, and whether the pressure is translating into real edge."
-        return {"author": "EdgeAgent", "tag": "agent", "time": self.chat_time_label(match), "text": text}
-
-    def mini_bar(self, parent, value, color):
-        bar = tk.Frame(parent, bg="#334155", height=8)
-        bar.pack(side="left", fill="x", expand=True, padx=8)
-        fill = tk.Frame(bar, bg=color, height=8)
-        fill.place(relx=0, rely=0, relwidth=max(0.04, min(value / 100, 1)), relheight=1)
-
-    def stat_bar(self, parent, label, home, away):
-        row = tk.Frame(parent, bg=PANEL)
-        row.pack(fill="x", pady=5)
-        top = tk.Frame(row, bg=PANEL)
-        top.pack(fill="x")
-        tk.Label(top, text=str(home), bg=PANEL, fg=TEXT, font=FONT_BOLD, width=8, anchor="w").pack(side="left")
-        tk.Label(top, text=label, bg=PANEL, fg=MUTED, font=FONT_SMALL).pack(side="left", fill="x", expand=True)
-        tk.Label(top, text=str(away), bg=PANEL, fg=TEXT, font=FONT_BOLD, width=8, anchor="e").pack(side="right")
-        bar = tk.Frame(row, bg="#263244", height=9)
-        bar.pack(fill="x", pady=(2, 0))
-        total = max(float(home) + float(away), 1.0)
-        left_weight = max(int((float(home) / total) * 100), 1)
-        right_weight = max(100 - left_weight, 1)
-        bar.grid_columnconfigure(0, weight=left_weight)
-        bar.grid_columnconfigure(1, weight=right_weight)
-        tk.Frame(bar, bg="#38bdf8", height=9).grid(row=0, column=0, sticky="ew")
-        tk.Frame(bar, bg=ORANGE, height=9).grid(row=0, column=1, sticky="ew")
-
-    def formation_line(self, parent, players, circle_bg, circle_fg):
-        row = tk.Frame(parent, bg="#4d7112")
-        row.pack(fill="x", pady=9)
-        for idx, player in enumerate(players, start=1):
-            slot = tk.Frame(row, bg="#4d7112")
-            slot.pack(side="left", expand=True)
-            tk.Label(slot, text=str(idx), bg=circle_bg, fg=circle_fg, font=FONT_BOLD, width=3, pady=4).pack()
-            tk.Label(slot, text=player, bg="#4d7112", fg=TEXT, font=FONT_SMALL).pack()
-
-    def lineup_formation(self, match, side, minute):
-        if side == "home":
-            return "4-3-3" if minute < 58 else "4-2-3-1"
-        return "3-5-2" if minute < 63 else "4-4-2"
-
-    def lineup_players(self, match, side, minute):
-        if side == "home":
-            players = [
-                {"name": "Ederson", "number": 31, "x": 0.50, "y": 0.92},
-                {"name": "Walker", "number": 2, "x": 0.18, "y": 0.79},
-                {"name": "Dias", "number": 3, "x": 0.38, "y": 0.76},
-                {"name": "Gvardiol", "number": 24, "x": 0.62, "y": 0.76},
-                {"name": "Ake", "number": 6, "x": 0.82, "y": 0.79},
-                {"name": "Rodri", "number": 16, "x": 0.50, "y": 0.63},
-                {"name": "De Bruyne", "number": 17, "x": 0.30, "y": 0.57},
-                {"name": "Bernardo", "number": 20, "x": 0.70, "y": 0.57},
-                {"name": "Foden", "number": 47, "x": 0.20, "y": 0.38},
-                {"name": "Haaland", "number": 9, "x": 0.50, "y": 0.31},
-                {"name": "Doku", "number": 11, "x": 0.80, "y": 0.38},
-            ]
-            if minute >= 58:
-                players[10] = {"name": "Grealish", "number": 10, "x": 0.80, "y": 0.44, "sub": True}
-                players[6] = {"name": "Kovacic", "number": 8, "x": 0.34, "y": 0.60, "sub": True}
-            return players
-
-        players = [
-            {"name": "Alisson", "number": 1, "x": 0.50, "y": 0.08},
-            {"name": "Konate", "number": 5, "x": 0.24, "y": 0.19},
-            {"name": "Van Dijk", "number": 4, "x": 0.50, "y": 0.16},
-            {"name": "Robertson", "number": 26, "x": 0.76, "y": 0.19},
-            {"name": "Alexander-Arnold", "number": 66, "x": 0.12, "y": 0.32},
-            {"name": "Mac Allister", "number": 10, "x": 0.34, "y": 0.30},
-            {"name": "Szoboszlai", "number": 8, "x": 0.50, "y": 0.28},
-            {"name": "Gravenberch", "number": 38, "x": 0.66, "y": 0.30},
-            {"name": "Diaz", "number": 7, "x": 0.88, "y": 0.32},
-            {"name": "Salah", "number": 11, "x": 0.36, "y": 0.47},
-            {"name": "Nunez", "number": 9, "x": 0.64, "y": 0.47},
-        ]
-        if minute >= 63:
-            players[9] = {"name": "Jota", "number": 20, "x": 0.34, "y": 0.44, "sub": True}
-            players[6] = {"name": "Jones", "number": 17, "x": 0.50, "y": 0.28, "sub": True}
-        return players
-
-    def draw_side_pitch(self, canvas, match, minute):
-        canvas.delete("all")
-        width = max(canvas.winfo_width(), 920)
-        height = max(canvas.winfo_height(), 560)
-        margin = 24
-
-        canvas.create_rectangle(margin, margin, width - margin, height - margin, outline="#d5e59b", width=2)
-        canvas.create_line(width / 2, margin, width / 2, height - margin, fill="#d5e59b", width=2)
-        canvas.create_oval(width / 2 - 58, height / 2 - 58, width / 2 + 58, height / 2 + 58, outline="#d5e59b", width=2)
-        canvas.create_oval(width / 2 - 4, height / 2 - 4, width / 2 + 4, height / 2 + 4, fill="#d5e59b", outline="")
-
-        self.draw_side_penalty_box(canvas, width, height, margin, left_side=True)
-        self.draw_side_penalty_box(canvas, width, height, margin, left_side=False)
-
-        home_players = self.lineup_players(match, "home", minute)
-        away_players = self.lineup_players(match, "away", minute)
-
-        canvas.create_text(margin + 8, 10, text=f"{match['home']}  {self.lineup_formation(match, 'home', minute)}", fill=TEXT, font=FONT_BOLD, anchor="nw")
-        canvas.create_text(width - margin - 8, 10, text=f"{match['away']}  {self.lineup_formation(match, 'away', minute)}", fill=TEXT, font=FONT_BOLD, anchor="ne")
-
-        self.draw_team_side_pitch(canvas, home_players, width, height, margin, side="left", is_home=True)
-        self.draw_team_side_pitch(canvas, away_players, width, height, margin, side="right", is_home=False)
-
-    def draw_side_penalty_box(self, canvas, width, height, margin, left_side=True):
-        if left_side:
-            x0 = margin
-            x1 = margin + 140
-            six_x1 = margin + 56
-        else:
-            x0 = width - margin - 140
-            x1 = width - margin
-            six_x1 = width - margin - 56
-        canvas.create_rectangle(x0, height * 0.22, x1, height * 0.78, outline="#d5e59b", width=2)
-        if left_side:
-            canvas.create_rectangle(x0, height * 0.38, six_x1, height * 0.62, outline="#d5e59b", width=2)
-        else:
-            canvas.create_rectangle(six_x1, height * 0.38, x1, height * 0.62, outline="#d5e59b", width=2)
-
-    def draw_team_side_pitch(self, canvas, players, width, height, margin, side, is_home):
-        circle_fill = "#101826" if is_home else "#f8fafc"
-        text_fill = TEXT if is_home else "#0f172a"
-        accent = ORANGE if is_home else CYAN
-        usable_w = width - (margin * 2)
-        usable_h = height - (margin * 2)
-
-        for player in players:
-            x_norm = 1 - player["y"] if side == "left" else player["y"]
-            y_norm = player["x"]
-            x = margin + usable_w * x_norm
-            y = margin + usable_h * y_norm
-            radius = 18
-            if player.get("sub"):
-                canvas.create_oval(x - radius - 4, y - radius - 4, x + radius + 4, y + radius + 4, outline=accent, width=2)
-            canvas.create_oval(x - radius, y - radius, x + radius, y + radius, fill=circle_fill, outline="")
-            canvas.create_text(x, y, text=str(player["number"]), fill=text_fill, font=FONT_BOLD)
-            canvas.create_text(x, y + 28, text=player["name"], fill=TEXT, font=FONT_SMALL)
-
-    def lineup_notes(self, match, minute):
-        notes = [
-            f"Replay minute {minute:02d}' drives the shape shown on the pitch.",
-            f"{match['home']} is shown on the left and {match['away']} on the right.",
-            "Substitutions are highlighted with an outer ring so formation changes are easy to spot.",
-            "This pitch is meant to work with the replay slider, not as a separate frozen view.",
-        ]
-        if minute >= 58:
-            notes.append(f"{match['home']} has already made an attacking adjustment by this point.")
-        if minute >= 63:
-            notes.append(f"{match['away']} has already reshaped the front line by this point.")
-        return notes
-
-    def match_events(self, match):
-        if match["status"] == "LIVE":
-            return [
-                ("09'", match["home"], "SHOT", "Early low shot forced a near-post save"),
-                ("24'", match["home"], "CARD", "Tactical foul stopped a transition"),
-                ("33'", match["away"], "SAVE", "Keeper denied a close-range finish"),
-                ("41'", match["away"], "GOAL", f"{match['away']} took the lead after a quick break"),
-                ("HT", "Match", "SCORE", f"{match['home_score']} - {match['away_score']} at the break"),
-                ("58'", match["home"], "SUB", "Fresh winger introduced to raise tempo"),
-                ("63'", match["away"], "VAR", "Penalty shout checked and waved away"),
-                (f"{match['minute']}'", match["home"], "PRESS", "Home side pushing higher and winning second balls"),
-            ]
-        if match["minute"] == 0:
-            return [
-                ("00'", "Match", "INFO", "Pre-match view: replay will fill once live or historical event data is loaded"),
-            ]
-        return [
-            ("12'", match["home"], "SHOT", "Early chance saved low to the keeper's left"),
-            ("27'", match["away"], "GOAL", "Back-post finish after a diagonal switch"),
-            ("49'", match["home"], "SUB", "Midfield change to control the center"),
-            ("68'", match["away"], "CARD", "Late challenge in transition"),
-            ("74'", match["home"], "PRESS", "Sustained spell pinned the away side deep"),
-            ("FT", "Match", "SCORE", f"{match['home_score']} - {match['away_score']} full-time"),
-        ]
-
-    def timeline_events(self, match, max_minute):
-        events = []
-        for minute_text, team, event, detail in self.match_events(match):
-            minute = self.event_minute_value(minute_text, max_minute)
-            if minute is None:
-                continue
-            events.append(
-                {
-                    "minute": minute,
-                    "minute_text": minute_text,
-                    "team": team or "Match",
-                    "event": event,
-                    "detail": detail,
-                }
-            )
-        return events
-
-    def event_minute_value(self, minute_text, max_minute):
-        text = str(minute_text).strip().upper().replace("'", "")
-        if text == "HT":
-            return min(45, max_minute)
-        if text == "FT":
-            return max_minute
-        digits = "".join(ch for ch in text if ch.isdigit())
-        if not digits:
-            return None
-        return min(int(digits), max_minute)
-
-    def match_stats(self, match):
-        home_edge = max(match["edge"], 0)
-        return [
-            ("Expected goals (xG)", round(0.8 + home_edge / 10, 2), round(0.7 + abs(min(match["edge"], 0)) / 10, 2)),
-            ("Shots on target", 5 if match["home_score"] else 2, 3 if match["away_score"] else 2),
-            ("Shots off target", 6, 4),
-            ("Blocked shots", 4, 2),
-            ("Possession (%)", 54 if match["edge"] >= 0 else 47, 46 if match["edge"] >= 0 else 53),
-            ("Corner kicks", 6, 3),
-            ("Offsides", 1, 2),
-            ("Fouls", 10, 8),
-            ("Throw ins", 19, 21),
-            ("Yellow cards", 1, 1),
-            ("Crosses", 14, 10),
-            ("Goalkeeper saves", 2, 4),
-        ]
-
-    def stats_max_minute(self, match):
-        return max(match["minute"], 1) if match["status"] == "LIVE" else 90
-
-    def stats_reference_minute(self, match):
-        if match["status"] == "LIVE":
-            return max(match["minute"], 1)
-        if match["status"] == "UP":
-            return 0
-        return 90
-
-    def current_replay_minute(self, match):
-        max_minute = self.stats_max_minute(match)
-        if self.replay_minute is None:
-            return self.stats_reference_minute(match)
-        return max(0, min(int(self.replay_minute), max_minute))
-
-    def stat_map(self, match, minute=None, max_minute=None):
-        if max_minute is None:
-            max_minute = self.stats_max_minute(match)
-        if minute is None:
-            minute = self.current_replay_minute(match)
-        return {label: (home, away) for label, home, away in self.match_stats_at_minute(match, minute, max_minute)}
-
-    def match_stats_at_minute(self, match, minute, max_minute=90):
-        ratio = 0 if max_minute <= 0 else max(0.0, min(minute / max_minute, 1.0))
-        live_bias = ((match["id"] % 5) - 2) / 14
-        rows = []
-
-        for label, final_home, final_away in self.match_stats(match):
-            if label == "Possession (%)":
-                swing = live_bias * (0.6 - ratio) * 18
-                home_share = max(32, min(68, final_home + swing))
-                away_share = 100 - home_share
-                rows.append((label, int(round(home_share)), int(round(away_share))))
-                continue
-
-            home_progress = max(0.0, ratio + live_bias * 0.18)
-            away_progress = max(0.0, ratio - live_bias * 0.18)
-
-            if label == "Expected goals (xG)":
-                home_value = round(final_home * self.timeline_curve(home_progress), 2)
-                away_value = round(final_away * self.timeline_curve(away_progress), 2)
-            else:
-                home_value = int(round(final_home * self.timeline_curve(home_progress)))
-                away_value = int(round(final_away * self.timeline_curve(away_progress)))
-
-            rows.append((label, home_value, away_value))
-
-        if match["status"] == "UP" and minute == 0:
-            adjusted_rows = []
-            for label, home_value, away_value in rows:
-                if label == "Possession (%)":
-                    adjusted_rows.append((label, 50, 50))
-                elif label == "Expected goals (xG)":
-                    adjusted_rows.append((label, 0.0, 0.0))
-                else:
-                    adjusted_rows.append((label, 0, 0))
-            return adjusted_rows
-
-        return rows
-
-    def stats_summary_percentages(self, match, minute, max_minute=90):
-        current_stats = {label: (home, away) for label, home, away in self.match_stats_at_minute(match, minute, max_minute)}
-        xg_home, xg_away = current_stats.get("Expected goals (xG)", (0.0, 0.0))
-        shots_home, shots_away = current_stats.get("Shots on target", (0, 0))
-        possession_home, possession_away = current_stats.get("Possession (%)", (50, 50))
-        pressure_home, pressure_away = current_stats.get("Corner kicks", (0, 0))
-
-        def split(left, right):
-            total = left + right
-            if total <= 0:
-                return 50, 50
-            left_pct = int(round((left / total) * 100))
-            return left_pct, max(0, 100 - left_pct)
-
-        return [
-            ("xG Share", *split(xg_home, xg_away)),
-            ("Shot Quality", *split(shots_home, shots_away)),
-            ("Possession", int(possession_home), int(possession_away)),
-            ("Pressure", *split(pressure_home, pressure_away)),
-        ]
-
-    def timeline_curve(self, ratio):
-        ratio = max(0.0, min(ratio, 1.0))
-        if ratio <= 0:
-            return 0.0
-        if ratio >= 1:
-            return 1.0
-        return min(1.0, max(0.0, (ratio ** 0.84) * (0.92 + ratio * 0.08)))
-
-    def attack_stats(self, match, minute, max_minute):
-        stats = self.stat_map(match, minute, max_minute)
-        xg_home, xg_away = stats.get("Expected goals (xG)", (0.0, 0.0))
-        on_target_home, on_target_away = stats.get("Shots on target", (0, 0))
-        off_target_home, off_target_away = stats.get("Shots off target", (0, 0))
-        blocked_home, blocked_away = stats.get("Blocked shots", (0, 0))
-        crosses_home, crosses_away = stats.get("Crosses", (0, 0))
-        corners_home, corners_away = stats.get("Corner kicks", (0, 0))
-
-        home_big = max(0, int(round(on_target_home * 0.6 + xg_home * 1.5)))
-        away_big = max(0, int(round(on_target_away * 0.6 + xg_away * 1.5)))
-        home_box = on_target_home + off_target_home + int(round(crosses_home * 0.4))
-        away_box = on_target_away + off_target_away + int(round(crosses_away * 0.4))
-        home_accuracy = int(round((on_target_home / max(on_target_home + off_target_home + blocked_home, 1)) * 100))
-        away_accuracy = int(round((on_target_away / max(on_target_away + off_target_away + blocked_away, 1)) * 100))
-
-        return [
-            ("Expected goals (xG)", xg_home, xg_away),
-            ("Shots on target", on_target_home, on_target_away),
-            ("Shots off target", off_target_home, off_target_away),
-            ("Blocked shots", blocked_home, blocked_away),
-            ("Big chances", home_big, away_big),
-            ("Touches in box", home_box, away_box),
-            ("Crosses", crosses_home, crosses_away),
-            ("Shot accuracy (%)", home_accuracy, away_accuracy),
-            ("Set-piece threat", corners_home, corners_away),
-        ]
-
-    def attack_summary_percentages(self, match, minute, max_minute):
-        rows = {label: (home, away) for label, home, away in self.attack_stats(match, minute, max_minute)}
-        xg_home, xg_away = rows["Expected goals (xG)"]
-        shots_home, shots_away = rows["Shots on target"]
-        box_home, box_away = rows["Touches in box"]
-        accuracy_home, accuracy_away = rows["Shot accuracy (%)"]
-        return [
-            ("xG Threat", *self.percentage_split(xg_home, xg_away)),
-            ("On Target", *self.percentage_split(shots_home, shots_away)),
-            ("Box Threat", *self.percentage_split(box_home, box_away)),
-            ("Accuracy", accuracy_home, accuracy_away),
-        ]
-
-    def attack_players(self, match, team, minute, max_minute):
-        ratio = 0 if max_minute <= 0 else max(0.0, min(minute / max_minute, 1.0))
-        if team == match["home"]:
-            names = ["Erling Haaland", "Phil Foden", "Kevin De Bruyne"]
-            xg_base = [0.38, 0.18, 0.14]
-            action_base = [4, 3, 5]
-        else:
-            names = ["Mohamed Salah", "Darwin Nunez", "Luis Diaz"]
-            xg_base = [0.34, 0.22, 0.16]
-            action_base = [4, 3, 4]
-
-        rows = []
-        for idx, name in enumerate(names):
-            xg = round(xg_base[idx] * (0.45 + ratio * 0.75), 2)
-            shots = max(1, int(round(action_base[idx] * (0.4 + ratio * 0.8))))
-            key_passes = max(0, int(round((action_base[idx] - 1) * (0.3 + ratio * 0.7))))
-            touches_box = max(1, int(round(shots + key_passes + ratio * 3 + idx)))
-            rows.append(
-                {
-                    "name": name,
-                    "team": team,
-                    "summary": f"xG {xg}  |  shots {shots}  |  key passes {key_passes}",
-                    "headline": f"{name} is one of the main attacking drivers for {team} at this point in the match.",
-                    "metrics": [
-                        ("xG", f"{xg:.2f}"),
-                        ("Shots", str(shots)),
-                        ("Key Passes", str(key_passes)),
-                        ("Box Touches", str(touches_box)),
-                    ],
-                    "notes": [
-                        f"Shot volume is building as the match moves toward {minute:02d}'.",
-                        "Most value is coming from central combinations and second-ball attacks.",
-                        "Useful for comparing player-level threat against the team totals above.",
-                    ],
-                }
-            )
-        return rows
-
-    def control_stats(self, match, minute, max_minute):
-        stats = self.stat_map(match, minute, max_minute)
-        possession_home, possession_away = stats.get("Possession (%)", (50, 50))
-        throw_home, throw_away = stats.get("Throw ins", (0, 0))
-        corners_home, corners_away = stats.get("Corner kicks", (0, 0))
-        crosses_home, crosses_away = stats.get("Crosses", (0, 0))
-
-        ratio = 0 if max_minute <= 0 else max(0.0, min(minute / max_minute, 1.0))
-        home_pass_accuracy = int(round(76 + possession_home * 0.18 + ratio * 4))
-        away_pass_accuracy = int(round(76 + possession_away * 0.18 + ratio * 4))
-        home_field_tilt = int(round(min(78, max(22, possession_home + corners_home * 2 + match["edge"] * 1.5))))
-        away_field_tilt = 100 - home_field_tilt
-        home_progressive = max(1, int(round(crosses_home * 0.8 + throw_home * 0.35 + ratio * 8)))
-        away_progressive = max(1, int(round(crosses_away * 0.8 + throw_away * 0.35 + ratio * 8)))
-        home_tempo = max(1, int(round((throw_home + corners_home + crosses_home) * 0.9)))
-        away_tempo = max(1, int(round((throw_away + corners_away + crosses_away) * 0.9)))
-
-        return [
-            ("Possession (%)", possession_home, possession_away),
-            ("Pass accuracy (%)", home_pass_accuracy, away_pass_accuracy),
-            ("Field tilt (%)", home_field_tilt, away_field_tilt),
-            ("Progressive entries", home_progressive, away_progressive),
-            ("Corners won", corners_home, corners_away),
-            ("Cross volume", crosses_home, crosses_away),
-            ("Tempo actions", home_tempo, away_tempo),
-            ("Restarts / throw-ins", throw_home, throw_away),
-        ]
-
-    def control_summary_percentages(self, match, minute, max_minute):
-        rows = {label: (home, away) for label, home, away in self.control_stats(match, minute, max_minute)}
-        possession_home, possession_away = rows["Possession (%)"]
-        pass_home, pass_away = rows["Pass accuracy (%)"]
-        tilt_home, tilt_away = rows["Field tilt (%)"]
-        prog_home, prog_away = rows["Progressive entries"]
-        return [
-            ("Possession", possession_home, possession_away),
-            ("Pass Clean", pass_home, pass_away),
-            ("Field Tilt", tilt_home, tilt_away),
-            ("Progression", *self.percentage_split(prog_home, prog_away)),
-        ]
-
-    def defense_stats(self, match, minute, max_minute):
-        stats = self.stat_map(match, minute, max_minute)
-        fouls_home, fouls_away = stats.get("Fouls", (0, 0))
-        yellows_home, yellows_away = stats.get("Yellow cards", (0, 0))
-        saves_home, saves_away = stats.get("Goalkeeper saves", (0, 0))
-        offsides_home, offsides_away = stats.get("Offsides", (0, 0))
-        blocked_home, blocked_away = stats.get("Blocked shots", (0, 0))
-        ratio = 0 if max_minute <= 0 else max(0.0, min(minute / max_minute, 1.0))
-
-        home_duels = max(1, int(round(9 + ratio * 11 + max(match["edge"], 0))))
-        away_duels = max(1, int(round(9 + ratio * 11 + abs(min(match["edge"], 0)))))
-        home_interceptions = max(1, int(round(blocked_home * 1.6 + offsides_home + ratio * 5)))
-        away_interceptions = max(1, int(round(blocked_away * 1.6 + offsides_away + ratio * 5)))
-        home_clearances = max(1, int(round(saves_home * 2.2 + fouls_home * 0.5 + ratio * 4)))
-        away_clearances = max(1, int(round(saves_away * 2.2 + fouls_away * 0.5 + ratio * 4)))
-
-        return [
-            ("Goalkeeper saves", saves_home, saves_away),
-            ("Blocked shots", blocked_home, blocked_away),
-            ("Interceptions", home_interceptions, away_interceptions),
-            ("Clearances", home_clearances, away_clearances),
-            ("Duels won", home_duels, away_duels),
-            ("Offsides forced", offsides_home, offsides_away),
-            ("Fouls committed", fouls_home, fouls_away),
-            ("Yellow cards", yellows_home, yellows_away),
-        ]
-
-    def defense_summary_percentages(self, match, minute, max_minute):
-        rows = {label: (home, away) for label, home, away in self.defense_stats(match, minute, max_minute)}
-        saves_home, saves_away = rows["Goalkeeper saves"]
-        duels_home, duels_away = rows["Duels won"]
-        intercept_home, intercept_away = rows["Interceptions"]
-        discipline_home, discipline_away = rows["Yellow cards"]
-        discipline_left, discipline_right = self.percentage_split(max(1, 5 - discipline_home), max(1, 5 - discipline_away))
-        return [
-            ("Duel Share", *self.percentage_split(duels_home, duels_away)),
-            ("Save Load", *self.percentage_split(saves_home, saves_away)),
-            ("Interceptions", *self.percentage_split(intercept_home, intercept_away)),
-            ("Discipline", discipline_left, discipline_right),
-        ]
-
-    def defense_players(self, match, team, minute, max_minute):
-        ratio = 0 if max_minute <= 0 else max(0.0, min(minute / max_minute, 1.0))
-        if team == match["home"]:
-            names = ["Ruben Dias", "Rodri", "Ederson"]
-            tackle_base = [3, 4, 1]
-            duel_base = [6, 7, 1]
-        else:
-            names = ["Virgil van Dijk", "Alexis Mac Allister", "Alisson"]
-            tackle_base = [3, 4, 1]
-            duel_base = [7, 6, 1]
-
-        rows = []
-        for idx, name in enumerate(names):
-            tackles = max(1, int(round(tackle_base[idx] * (0.35 + ratio * 0.85))))
-            duels = max(1, int(round(duel_base[idx] * (0.4 + ratio * 0.8))))
-            recoveries = max(1, int(round((duel_base[idx] + 2) * (0.4 + ratio * 0.9))))
-            rows.append(
-                {
-                    "name": name,
-                    "team": team,
-                    "summary": f"tackles {tackles}  |  duels {duels}  |  recoveries {recoveries}",
-                    "headline": f"{name} is carrying a big share of the defensive work for {team}.",
-                    "metrics": [
-                        ("Tackles", str(tackles)),
-                        ("Duels", str(duels)),
-                        ("Recoveries", str(recoveries)),
-                        ("Def Actions", str(tackles + duels + recoveries)),
-                    ],
-                    "notes": [
-                        "Good for spotting whether the defense is proactive or just absorbing pressure.",
-                        "Higher recovery volume often lines up with field tilt and transition stress.",
-                        f"This snapshot reflects the replay state at {minute:02d}'.",
-                    ],
-                }
-            )
-        return rows
-
-    def percentage_split(self, left, right):
-        total = left + right
-        if total <= 0:
-            return 50, 50
-        left_pct = int(round((left / total) * 100))
-        return left_pct, max(0, 100 - left_pct)
-
-    def odds_rows(self, match):
-        base_home, base_draw, base_away = match["odds"]
-        books = [
-            ("DraftKings", -0.02, 0.04, 0.03),
-            ("FanDuel", 0.03, -0.03, 0.02),
-            ("BetMGM", 0.01, 0.02, -0.04),
-            ("Caesars", -0.04, 0.05, 0.01),
-            ("bet365", 0.02, -0.01, 0.04),
-            ("Pinnacle", 0.05, 0.03, -0.02),
-            ("BetRivers", -0.01, -0.04, 0.05),
-            ("Unibet", 0.04, 0.00, -0.01),
-        ]
-        rows = []
-        for index, (book, h_adj, d_adj, a_adj) in enumerate(books):
-            home = max(1.01, base_home + h_adj)
-            draw = max(1.01, base_draw + d_adj)
-            away = max(1.01, base_away + a_adj)
-            edge = round(match["edge"] + ((index % 4) - 1.5) * 0.7, 1)
-            rows.append((book, home, draw, away, edge))
-        return rows
-
-    def odds_detail_rows(self, match, book_name):
-        book_row = next((row for row in self.odds_rows(match) if row[0] == book_name), self.odds_rows(match)[0])
-        _, home, draw, away, edge = book_row
-        return [
-            ("1X2", f"{home:.2f}", f"{draw:.2f}", f"{away:.2f}", "main line"),
-            ("Double Chance", "1X 1.22", "", f"X2 1.61", "safer"),
-            ("Draw No Bet", f"{max(1.10, home - 0.45):.2f}", "", f"{max(1.10, away - 0.55):.2f}", "reduced risk"),
-            ("Over/Under 2.5", "Over 1.91", "", "Under 1.95", "tight market"),
-            ("Over/Under 3.5", "Over 2.74", "", "Under 1.48", "tempo sensitive"),
-            ("BTTS", "Yes 1.68", "", "No 2.18", "live pace"),
-            ("Asian Handicap", f"{match['home']} -0.25", "", f"{match['away']} +0.25", "model value"),
-            ("Corners O/U 9.5", "Over 1.87", "", "Under 1.98", "edge small"),
-            ("Cards O/U 4.5", "Over 1.73", "", "Under 2.08", "ref linked"),
-            ("Next Goal", f"{match['home']} 2.40", "", f"{match['away']} 2.75", "live only"),
-        ]
-
-    def prediction_rows(self, match):
-        home, draw, away = match["pred"]
-        sources = [
-            ("Opta", 3, -1, -2),
-            ("Forebet", -2, 1, 1),
-            ("PredictZ", 1, 2, -3),
-            ("SportsMole", -1, -2, 3),
-            ("WinDrawWin", 2, 0, -2),
-            ("Betimate", -3, 3, 0),
-            ("SoccerVista", 0, -1, 1),
-            ("Our Model", round(match["edge"]), 0, -round(match["edge"])),
-        ]
-        rows = []
-        for source, h_adj, d_adj, a_adj in sources:
-            h = max(1, min(98, int(home + h_adj)))
-            d = max(1, min(98, int(draw + d_adj)))
-            a = max(1, min(98, int(away + a_adj)))
-            total = h + d + a
-            h = round(h * 100 / total)
-            d = round(d * 100 / total)
-            a = max(1, 100 - h - d)
-            pick = match["home"] if h >= d and h >= a else match["away"] if a >= d else "Draw"
-            rows.append((source, h, d, a, pick))
-        return rows
-
-    def prediction_detail_snapshot(self, match, source_name):
-        row = next((item for item in self.prediction_rows(match) if item[0] == source_name), self.prediction_rows(match)[0])
-        _, home, draw, away, pick = row
-        return {
-            "headline": f"{source_name} leans {pick} for {match['home']} vs {match['away']}",
-            "confidence": max(home, draw, away),
-            "model_family": "ensemble + news weighting" if source_name in ("Opta", "Our Model") else "stats-led forecast",
-            "updated": "live" if match["status"] == "LIVE" else "pre-match",
-            "markets": [
-                ("1X2", f"{home}% / {draw}% / {away}%"),
-                ("Over 2.5", f"{min(78, away + 12)}%"),
-                ("Under 2.5", f"{max(22, 100 - away - 12)}%"),
-                ("BTTS", f"{52 + (match['home_score'] + match['away_score']) * 6}%"),
-                ("Most likely score", "1-1" if draw >= max(home, away) - 4 else "1-2" if pick == match["away"] else "2-1"),
-                ("Fair line", f"{pick} {round(100 / max(home, away), 2)}"),
-            ],
-            "reasons": [
-                f"{source_name} weights recent form and matchup profile heavily.",
-                f"{match['away']} pressure and transition threat improve the away scenario." if pick == match["away"] else f"{match['home']} control profile improves the home scenario." if pick == match["home"] else "Balanced game state keeps draw scenarios alive.",
-                f"Weather, referee, and market movement are included as secondary adjustments.",
-            ],
-            "flags": [
-                "Consensus can lag behind very recent lineup changes.",
-                "Source-specific scoreline markets are usually noisier than moneyline probabilities.",
-                "Treat as support evidence, not a standalone trigger.",
-            ],
-        }
-
-    def consensus_prediction(self, match):
-        rows = self.prediction_rows(match)
-        home_avg = round(sum(row[1] for row in rows) / len(rows))
-        draw_avg = round(sum(row[2] for row in rows) / len(rows))
-        away_avg = round(sum(row[3] for row in rows) / len(rows))
-        pick = match["home"] if home_avg >= draw_avg and home_avg >= away_avg else match["away"] if away_avg >= draw_avg else "Draw"
-        confidence = max(home_avg, draw_avg, away_avg)
-        return {
-            "home": home_avg,
-            "draw": draw_avg,
-            "away": away_avg,
-            "pick": pick,
-            "confidence": confidence,
-        }
-
-    def analysis_snapshot(self, match):
-        consensus = self.consensus_prediction(match)
-        odds = self.odds_rows(match)
-        best_book = max(odds, key=lambda item: item[4])
-        market_prob = round(100 / best_book[1]) if consensus["pick"] == match["home"] else round(100 / best_book[3]) if consensus["pick"] == match["away"] else round(100 / best_book[2])
-        true_prob = consensus["confidence"]
-        edge = round(true_prob - market_prob, 1)
-        data_quality = self.data_quality_score(match)
-        freshness = self.freshness_label(match)
-        lineup_status = self.lineup_status(match)
-        weather = self.weather_label(match)
-        market_move = self.market_movement_label(match)
-        missing = self.missing_inputs(match)
-
-        decision = "PASS"
-        decision_color = MUTED
-        if data_quality >= 82 and edge >= 5 and lineup_status == "Confirmed":
-            decision = "BET"
-            decision_color = GREEN
-        elif data_quality >= 70 and edge >= 2:
-            decision = "LEAN"
-            decision_color = ORANGE
-
-        reasons_for = [
-            f"Model consensus leans {consensus['pick']} with {consensus['confidence']}% confidence.",
-            f"Best tracked market is {best_book[0]} and leaves {edge:+.1f} implied edge.",
-            f"Form profile: {match['home']} {''.join(match['home_form'])} vs {match['away']} {''.join(match['away_form'])}.",
-        ]
-        if match["status"] == "LIVE":
-            reasons_for.append(f"Live state {match['minute']}' at {match['home_score']}-{match['away_score']} keeps the signal active.")
-        else:
-            reasons_for.append("Pre-match window still allows lineup, news, and odds confirmation before entry.")
-
-        reasons_against = [
-            f"Market move is {market_move.lower()}, so late entries may lose value.",
-            f"Weather and referee context can shift pace and foul profile ({weather.lower()}, {match['referee']}).",
-            "Prediction-source disagreement still matters even when average consensus looks strong.",
-        ]
-        if missing != ["None"]:
-            reasons_against.append(f"Weak inputs: {', '.join(missing)}.")
-
-        risk_controls = [
-            "Pass if edge drops below +2 before entry.",
-            "Use small fixed stake or fractional Kelly only.",
-            "No stacking correlated bets on the same match without re-checking line movement.",
-            "Downgrade to pass if lineup/news changes within the final refresh window.",
-        ]
-
-        data_buckets = [
-            ("Match state", f"{match['status']} {match['minute']}'  score {match['home_score']}-{match['away_score']}"),
-            ("Team profile", f"Attack {match['home_avg']:.1f}/{match['away_avg']:.1f}  form {''.join(match['home_form'])}/{''.join(match['away_form'])}"),
-            ("Availability", f"Lineups {lineup_status}  injuries {self.injury_status(match)}"),
-            ("Market", f"{len(odds)} books  best {best_book[0]}  move {market_move}"),
-            ("Context", f"{weather}  ref {match['referee']}  venue {match['venue']}"),
-            ("News", f"{self.news_status(match)}  local pulse {self.local_news_note(match)}"),
-        ]
-
-        sources = [
-            ("Lineups", "Squads", lineup_status, "High"),
-            ("Local News", "Context", self.news_state(match), "Medium"),
-            ("Weather", "External", "Fresh", "Medium"),
-            ("Odds Feed", "Market", "Live", "High"),
-            ("Prediction Feed", "Consensus", "Live", "Medium"),
-            ("Referee/Rules", "Context", "Confirmed", "Low"),
-        ]
-
-        return {
-            "decision": decision,
-            "decision_color": decision_color,
-            "market": f"{best_book[0]} best price  |  pick {consensus['pick']}",
-            "confidence": consensus["confidence"],
-            "edge": edge,
-            "true_prob": true_prob,
-            "market_prob": market_prob,
-            "data_quality": data_quality,
-            "freshness": freshness,
-            "lineups": lineup_status,
-            "lineup_color": GREEN if lineup_status == "Confirmed" else YELLOW if lineup_status == "Partial" else RED,
-            "weather": weather,
-            "news_status": self.news_status(match),
-            "reasons_for": reasons_for,
-            "reasons_against": reasons_against,
-            "risk_controls": risk_controls,
-            "data_buckets": data_buckets,
-            "missing": missing,
-            "sources": sources,
-            "consensus_spread": self.consensus_spread(match),
-            "books_tracked": len(odds),
-            "prediction_sources": len(self.prediction_rows(match)),
-            "market_move": market_move,
-            "referee_note": self.referee_note(match),
-        }
-
-    def data_quality_score(self, match):
-        score = 76
-        if match["status"] == "LIVE":
-            score += 6
-        if abs(match["edge"]) >= 4:
-            score += 4
-        if match["minute"] == 0:
-            score -= 3
-        if match["home"] in ("Man City", "Real Madrid", "Inter Milan"):
-            score += 3
-        return max(55, min(score, 94))
-
-    def freshness_label(self, match):
-        if match["status"] == "LIVE":
-            return "15s live"
-        if match["minute"] == 0:
-            return "5m pre"
-        return "30m old"
-
-    def lineup_status(self, match):
-        if match["status"] == "LIVE":
-            return "Confirmed"
-        if match["minute"] == 0 and match["edge"] >= 4:
-            return "Partial"
-        return "Pending"
-
-    def weather_label(self, match):
-        mapping = {
-            "England": "Light rain 11C",
-            "Spain": "Clear 17C",
-            "Italy": "Calm 15C",
-            "Germany": "Windy 9C",
-        }
-        return mapping.get(match["country"], "Normal 14C")
-
-    def injury_status(self, match):
-        return "minor doubts" if abs(match["edge"]) < 3 else "mostly clear"
-
-    def news_status(self, match):
-        return "2 local reports checked" if match["status"] == "LIVE" else "Awaiting final pre-match pressers"
-
-    def news_state(self, match):
-        return "Confirmed" if match["status"] == "LIVE" else "Checking"
-
-    def local_news_note(self, match):
-        return "travel and rotation flagged" if match["away"] in ("Liverpool", "Barcelona", "Napoli") else "quiet local cycle"
-
-    def market_movement_label(self, match):
-        return "Sharp move to away" if match["edge"] < -2 else "Mild move to home" if match["edge"] > 4 else "Flat market"
-
-    def missing_inputs(self, match):
-        missing = []
-        if match["status"] != "LIVE":
-            missing.append("confirmed lineups")
-        if abs(match["edge"]) < 2:
-            missing.append("clear market discrepancy")
-        if match["country"] == "Germany":
-            missing.append("local reporter confirmation")
-        return missing or ["None"]
-
-    def consensus_spread(self, match):
-        rows = self.prediction_rows(match)
-        picks = [row[4] for row in rows]
-        leader = max(set(picks), key=picks.count)
-        return picks.count(leader)
-
-    def referee_note(self, match):
-        return "card-happy profile" if "Taylor" in match["referee"] or "Oliver" in match["referee"] else "balanced whistle"
-
-    def table_rows(self, match):
-        base = [
-            ("Inter", 33, 49, 78, 25),
-            ("Napoli", 33, 15, 66, 20),
-            ("AC Milan", 33, 20, 64, 18),
-            ("Juventus", 32, 26, 60, 17),
-            ("Como 1907", 33, 29, 58, 16),
-            ("AS Roma", 33, 17, 58, 18),
-            ("Atalanta", 33, 16, 54, 14),
-            ("Bologna", 32, 5, 48, 14),
-            ("Lazio", 33, 4, 47, 12),
-            ("Sassuolo", 33, -3, 45, 13),
-            ("Udinese", 33, -5, 43, 12),
-            ("Torino", 33, -17, 40, 11),
-        ]
-        teams = [row[0] for row in base]
-        if match["home"] not in teams:
-            base.insert(6, (match["home"], 33, 8, 51, 13))
-        if match["away"] not in teams:
-            base.insert(3, (match["away"], 33, 20, 64, 18))
-        return [(idx, *row) for idx, row in enumerate(base[:14], start=1)]
-
-    def h2h_rows(self, match):
-        return [
-            ("2025", match["away"], match["home"], 3, 0),
-            ("2024/25", match["away"], match["home"], 1, 0),
-            ("2024", match["home"], match["away"], 0, 1),
-            ("2023/24", match["home"], match["away"], 1, 3),
-            ("2023", match["away"], match["home"], 1, 0),
-            ("2022/23", match["away"], match["home"], 3, 1),
-        ]
-
-    def form_badges(self, parent, form):
-        row = tk.Frame(parent, bg=PANEL)
-        row.pack(fill="x")
-        for result in form:
-            color = GREEN if result == "W" else RED if result == "L" else MUTED
-            bg = "#14532d" if result == "W" else "#7f1d1d" if result == "L" else "#475569"
-            tk.Label(row, text=result, bg=bg, fg=color, font=FONT_MONO, width=3, pady=2).pack(side="left", padx=2)
-
-    def render_decision_engine(self):
-        self.clear(self.recommendation_body)
-        snapshot = self.analysis_snapshot(self.current_match)
-
-        top = self.info_card(self.recommendation_body)
-        top.pack(fill="x", padx=6, pady=(6, 4))
-        tk.Label(top, text=snapshot["decision"], bg=PANEL_DARK, fg=snapshot["decision_color"], font=("Segoe UI", 16, "bold"), anchor="w").pack(fill="x", padx=10, pady=(8, 2))
-        tk.Label(top, text=snapshot["market"], bg=PANEL_DARK, fg=TEXT, font=FONT_BOLD, anchor="w").pack(fill="x", padx=10)
-        tk.Label(top, text=f"Confidence {snapshot['confidence']}%  |  Edge {snapshot['edge']:+.1f}  |  Data quality {snapshot['data_quality']}%", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(fill="x", padx=10, pady=(0, 8))
-
-        bands = tk.Frame(top, bg=PANEL_DARK)
-        bands.pack(fill="x", padx=10, pady=(0, 10))
-        for label, value, color in [
-            ("True Prob", f"{snapshot['true_prob']}%", CYAN),
-            ("Market Implied", f"{snapshot['market_prob']}%", ORANGE),
-            ("Discrepancy", f"{snapshot['edge']:+.1f}", snapshot["decision_color"]),
-        ]:
-            box = tk.Frame(bands, bg="#243244")
-            box.pack(side="left", expand=True, fill="x", padx=3)
-            tk.Label(box, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(6, 2))
-            tk.Label(box, text=value, bg="#243244", fg=color, font=FONT_BOLD).pack(pady=(0, 6))
-
-        self.section_title(self.recommendation_body, "WHY IT LIKES IT")
-        likes = self.info_card(self.recommendation_body)
-        likes.pack(fill="x", padx=6, pady=(0, 4))
-        for reason in snapshot["reasons_for"]:
-            tk.Label(likes, text=f"+ {reason}", bg=PANEL_DARK, fg=GREEN, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", padx=10, pady=2)
-
-        self.section_title(self.recommendation_body, "WHY IT CAN FAIL")
-        cautions = self.info_card(self.recommendation_body)
-        cautions.pack(fill="x", padx=6, pady=(0, 4))
-        for reason in snapshot["reasons_against"]:
-            tk.Label(cautions, text=f"- {reason}", bg=PANEL_DARK, fg=RED, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", padx=10, pady=2)
-
-        self.section_title(self.recommendation_body, "RISK CONTROLS")
-        risk = self.info_card(self.recommendation_body)
-        risk.pack(fill="x", padx=6, pady=(0, 4))
-        for rule in snapshot["risk_controls"]:
-            tk.Label(risk, text=f"* {rule}", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w", justify="left").pack(fill="x", padx=10, pady=2)
-
-    def render_data_quality(self):
-        self.clear(self.quality_body)
-        snapshot = self.analysis_snapshot(self.current_match)
-
-        row = tk.Frame(self.quality_body, bg=PANEL)
-        row.pack(fill="x", padx=6, pady=(6, 6))
-        for label, value, color in [
-            ("Freshness", snapshot["freshness"], CYAN),
-            ("Lineups", snapshot["lineups"], snapshot["lineup_color"]),
-            ("Weather", snapshot["weather"], ORANGE),
-            ("News", snapshot["news_status"], TEXT),
-        ]:
-            cell = tk.Frame(row, bg="#243244")
-            cell.pack(side="left", expand=True, fill="x", padx=2)
-            tk.Label(cell, text=label, bg="#243244", fg=MUTED, font=FONT_SMALL).pack(pady=(5, 2))
-            tk.Label(cell, text=value, bg="#243244", fg=color, font=FONT_BOLD).pack(pady=(0, 6))
-
-        self.section_title(self.quality_body, "DATA BUCKETS")
-        buckets = self.info_card(self.quality_body)
-        buckets.pack(fill="x", padx=6, pady=(0, 4))
-        for label, value in snapshot["data_buckets"]:
-            line = tk.Frame(buckets, bg=PANEL_DARK)
-            line.pack(fill="x", padx=10, pady=2)
-            tk.Label(line, text=label, bg=PANEL_DARK, fg=CYAN, font=FONT_SMALL, width=14, anchor="w").pack(side="left")
-            tk.Label(line, text=value, bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, anchor="w").pack(side="left")
-
-        self.section_title(self.quality_body, "MISSING / WEAK INPUTS")
-        missing = self.info_card(self.quality_body)
-        missing.pack(fill="x", padx=6, pady=(0, 4))
-        for item in snapshot["missing"]:
-            tk.Label(missing, text=f"- {item}", bg=PANEL_DARK, fg=RED if item != "None" else GREEN, font=FONT_SMALL, anchor="w").pack(fill="x", padx=10, pady=2)
-
-    def render_source_monitor(self):
-        self.clear(self.source_body)
-        snapshot = self.analysis_snapshot(self.current_match)
-
-        header = tk.Frame(self.source_body, bg=PANEL_DARK)
-        header.pack(fill="x", padx=6, pady=(6, 2))
-        for text, width in [("SOURCE", 14), ("TYPE", 10), ("STATE", 12), ("WEIGHT", 8)]:
-            tk.Label(header, text=text, bg=PANEL_DARK, fg=ORANGE, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
-
-        for source, kind, state, weight in snapshot["sources"]:
-            row = tk.Frame(self.source_body, bg=ROW)
-            row.pack(fill="x", padx=6, pady=1)
-            state_color = GREEN if state in ("Confirmed", "Live", "Fresh") else YELLOW if state in ("Partial", "Checking") else RED
-            for value, width, color in [
-                (source, 14, TEXT),
-                (kind, 10, MUTED),
-                (state, 12, state_color),
-                (weight, 8, CYAN),
-            ]:
-                tk.Label(row, text=value, bg=ROW, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left", pady=4)
-
-        footer = self.info_card(self.source_body)
-        footer.pack(fill="x", padx=6, pady=(4, 4))
-        tk.Label(footer, text=f"Consensus spread: {snapshot['consensus_spread']} pts  |  Books tracked: {snapshot['books_tracked']}  |  Prediction sources: {snapshot['prediction_sources']}", bg=PANEL_DARK, fg=MUTED, font=FONT_SMALL, anchor="w").pack(fill="x", padx=10, pady=(6, 4))
-        tk.Label(footer, text=f"Market move: {snapshot['market_move']}  |  Referee note: {snapshot['referee_note']}", bg=PANEL_DARK, fg=TEXT, font=FONT_SMALL, anchor="w").pack(fill="x", padx=10, pady=(0, 6))
-
-    def render_watchlist(self):
-        self.clear(self.watchlist_frame)
-        items = [m for m in MATCHES if m["id"] in self.watchlist_ids]
-        if not items:
-            tk.Label(
-                self.watchlist_frame,
-                text="No matches in watchlist. Click the star to add.",
-                bg=PANEL_DARK,
-                fg=MUTED,
-                font=FONT_MONO_SMALL,
-                anchor="center",
-                pady=8,
-            ).pack(fill="x", padx=4)
-            return
-
-        for match in items:
-            self.compact_match_row(self.watchlist_frame, match, selected=False)
-        self.watchlist_canvas.configure(scrollregion=self.watchlist_canvas.bbox("all"))
-
-    def render_sidebar_watchlist(self):
-        self.clear(self.sidebar_watch_body)
-        items = [m for m in MATCHES if m["id"] in self.watchlist_ids]
-        message = "No matches in watchlist." if not items else "\n".join(f"{m['home']} vs {m['away']}" for m in items[:4])
-        tk.Label(self.sidebar_watch_body, text=message, bg=PANEL_DARK, fg=MUTED, font=FONT_MONO_SMALL, anchor="w", justify="left", padx=10, pady=10).pack(fill="both", expand=True)
-
-    def render_history(self):
-        self.clear(self.source_body)
-        header = tk.Frame(self.source_body, bg=PANEL_DARK)
-        header.pack(fill="x", padx=6, pady=(6, 2))
-        cols = [("IDX", 4), ("TIME", 8), ("MATCH", 22), ("REC", 10), ("EDGE", 7), ("SETTLED", 8)]
-        for name, width in cols:
-            tk.Label(header, text=name, bg=PANEL_DARK, fg=ORANGE, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
-
-        for item in HISTORY_SAMPLE:
-            idx, time, match, rec, edge, settled = item
-            row = tk.Frame(self.source_body, bg=PANEL)
-            row.pack(fill="x", padx=6)
-            values = [idx, time, match[:22], rec[:10], f"{edge:+.1f}", settled]
-            widths = [4, 8, 22, 10, 7, 8]
-            for value, width in zip(values, widths):
-                color = GREEN if value.startswith("+") or value == "YES" else RED if value == "NO" else MUTED
-                tk.Label(row, text=value, bg=PANEL, fg=color, font=FONT_MONO_SMALL, width=width, anchor="w").pack(side="left")
-
-    def render_accuracy(self):
-        self.clear(self.accuracy_body)
+            self._render_tab()
+
+    # ──────────────────────────────────────────
+    # Watchlist actions
+    # ──────────────────────────────────────────
+
+    def add_to_watchlist(self):
+        m = self.current_match
+        self.watchlist_ids.add(m["id"])
         try:
-            summary = summarize_accuracy()
-            settled = summary.get("total_settled", 0)
-            rec_hit = summary.get("recommended_hit_rate", 0.0)
-            draw_hit = summary.get("draw_hit_rate", 0.0)
-            under_hit = summary.get("under_hit_rate", 0.0)
-        except Exception:
-            settled = 12
-            rec_hit = 75.0
-            draw_hit = 60.0
-            under_hit = 80.0
-
-        tk.Label(self.accuracy_body, text="ACCURACY SUMMARY", bg=PANEL, fg=ORANGE, font=FONT_MONO_SMALL, anchor="w").pack(fill="x", padx=8, pady=(8, 3))
-        for label, value in [
-            ("Settled analyses", settled),
-            ("Recommended hit %", rec_hit),
-            ("Draw outcome %", draw_hit),
-            ("Under 2.5 hit %", under_hit),
-        ]:
-            row = tk.Frame(self.accuracy_body, bg=PANEL)
-            row.pack(fill="x", padx=8, pady=1)
-            tk.Label(row, text=f"{label}:", bg=PANEL, fg=MUTED, font=FONT_MONO_SMALL, width=24, anchor="w").pack(side="left")
-            tk.Label(row, text=str(value), bg=PANEL, fg=GREEN, font=FONT_MONO_SMALL, anchor="e").pack(side="right")
-
-        community = self.platform_vs_community_summary()
-        tk.Label(self.accuracy_body, text="PLATFORM VS COMMUNITY", bg=PANEL, fg=CYAN, font=FONT_MONO_SMALL, anchor="w").pack(fill="x", padx=8, pady=(10, 3))
-        for label, value, color in [
-            ("Platform hit %", community["platform_hit"], ORANGE),
-            ("Community hit %", community["community_hit"], CYAN),
-            ("Settled challenge picks", community["settled"], GREEN),
-            ("Open challenge picks", community["open"], MUTED),
-        ]:
-            row = tk.Frame(self.accuracy_body, bg=PANEL)
-            row.pack(fill="x", padx=8, pady=1)
-            tk.Label(row, text=f"{label}:", bg=PANEL, fg=MUTED, font=FONT_MONO_SMALL, width=24, anchor="w").pack(side="left")
-            tk.Label(row, text=str(value), bg=PANEL, fg=color, font=FONT_MONO_SMALL, anchor="e").pack(side="right")
-
-    def toggle_watchlist(self, match):
-        if match["id"] in self.watchlist_ids:
-            self.watchlist_ids.remove(match["id"])
-        else:
-            self.watchlist_ids.add(match["id"])
-        self.render_matches()
-        self.render_watchlist()
-        self.render_sidebar_watchlist()
-
-    def add_current_to_watchlist(self):
-        match = self.current_match
-        self.watchlist_ids.add(match["id"])
-        try:
-            add_match(self.state_from_match(match), self.market_from_match(match))
+            add_match(self._state(m), self._market(m))
         except Exception:
             pass
-        self.tracker_status.config(text=f"{match['home']} vs {match['away']} added to watchlist.", fg=GREEN)
-        self.render_matches()
-        self.render_watchlist()
-        self.render_sidebar_watchlist()
+        if self.tracker_status:
+            self.tracker_status.config(text=f"Added: {m.get('home','')} vs {m.get('away','')}", fg=GREEN)
+        self.render_matches(); self.render_watchlist(); self._render_sidebar_watchlist()
 
-    def remove_current_from_watchlist(self):
-        match = self.current_match
-        self.watchlist_ids.discard(match["id"])
-        self.tracker_status.config(text=f"{match['home']} vs {match['away']} removed from watchlist.", fg=MUTED)
-        self.render_matches()
-        self.render_watchlist()
-        self.render_sidebar_watchlist()
+    def remove_from_watchlist(self):
+        m = self.current_match
+        self.watchlist_ids.discard(m["id"])
+        if self.tracker_status:
+            self.tracker_status.config(text=f"Removed: {m.get('home','')} vs {m.get('away','')}", fg=MUTED)
+        self.render_matches(); self.render_watchlist(); self._render_sidebar_watchlist()
 
-    def state_from_match(self, match):
-        return MatchState(
-            home_team=match["home"],
-            away_team=match["away"],
-            minute=int(match["minute"]),
-            home_goals=int(match["home_score"]),
-            away_goals=int(match["away_score"]),
-            stoppage_minutes_remaining=0,
-            home_red_cards=0,
-            away_red_cards=0,
-            pressure_bias=1 if match["edge"] > 0 else 0,
-        )
-
-    def market_from_match(self, match):
-        return MarketInput(
-            total_line=2.5,
-            draw_cents=match["draw_price"],
-            under_cents=match["under_price"],
-            over_cents=match["over_price"],
-        )
-
-    def run_analysis(self):
-        match = self.current_match
-        state = self.state_from_match(match)
-        market = self.market_from_match(match)
-        results = self.engine.full_analysis(state, market)
-
-        edges = [
-            ("DRAW", self.engine.fair_cents(results["draw_prob"]) - market.draw_cents),
-            ("UNDER 2.5", self.engine.fair_cents(results["under_prob"]) - market.under_cents),
-            ("OVER 2.5", self.engine.fair_cents(results["over_prob"]) - market.over_cents),
-        ]
-        best_label, best_edge = max(edges, key=lambda item: item[1])
-        confidence = max(0.0, min(99.0, 50.0 + best_edge))
-
-        lines = [
-            f"{match['home']} vs {match['away']}",
-            f"Recommendation: {best_label}",
-            f"Best edge: {best_edge:+.1f}c",
-            f"Confidence: {confidence:.1f}%",
-            "",
-            f"Draw model: {results['draw_prob'] * 100:.1f}%",
-            f"Under 2.5 model: {results['under_prob'] * 100:.1f}%",
-            f"Over 2.5 model: {results['over_prob'] * 100:.1f}%",
-            "",
-            "Inputs:",
-            f"Minute {state.minute}, score {state.home_goals}-{state.away_goals}",
-            f"Market D/U/O: {market.draw_cents:.0f}/{market.under_cents:.0f}/{market.over_cents:.0f}",
-        ]
-
-        try:
-            log_analysis({
-                "home_team": state.home_team,
-                "away_team": state.away_team,
-                "minute": state.minute,
-                "home_goals": state.home_goals,
-                "away_goals": state.away_goals,
-                "stoppage": state.stoppage_minutes_remaining,
-                "home_reds": state.home_red_cards,
-                "away_reds": state.away_red_cards,
-                "pressure": state.pressure_bias,
-                "draw_price": market.draw_cents,
-                "under_price": market.under_cents,
-                "over_price": market.over_cents,
-                "recommended": best_label,
-                "confidence": round(confidence, 1),
-                "best_edge": round(best_edge, 1),
-            })
-        except Exception:
-            pass
-
-        HISTORY_SAMPLE.insert(0, (str(len(HISTORY_SAMPLE) + 1), "LIVE", f"{match['home']} vs {match['away']}", best_label, best_edge, "NO"))
-        del HISTORY_SAMPLE[5:]
-        self.render_decision_engine()
-        self.render_data_quality()
-        self.render_source_monitor()
-        self.render_accuracy()
-        self.tracker_status.config(text="Analysis complete.", fg=GREEN)
+    # ──────────────────────────────────────────
+    # Tracker
+    # ──────────────────────────────────────────
 
     def start_tracker(self):
         if self.tracker_running:
-            self.tracker_status.config(text="Tracker already running.", fg=MUTED)
             return
         self.tracker_running = True
-        self.tracker_status.config(text="Live tracker started.", fg=GREEN)
-        self.tracker_tick()
+        if self.tracker_status:
+            self.tracker_status.config(text="Tracker started.", fg=GREEN)
+        self._tracker_tick()
 
-    def tracker_tick(self):
-        if not self.tracker_running:
-            return
-        if self.current_match["status"] == "LIVE" and self.current_match["minute"] < 90:
-            self.current_match["minute"] += 1
-            if self.current_match["minute"] >= 90:
-                self.current_match["minute"] = 90
-                self.current_match["status"] = "FT"
+    def _tracker_tick(self):
+        if not self.tracker_running: return
+        m = self.current_match
+        if m.get("status")=="LIVE" and m.get("minute",0) < 90:
+            m["minute"] += 1
+            if m["minute"] >= 90:
+                m["status"] = "FT"
                 self.tracker_running = False
-                self.settle_match_challenges(self.current_match)
-                self.tracker_status.config(text="Match finished. Challenge picks settled.", fg=GREEN)
-            self.select_match(self.current_match)
+                self._settle_challenges(m)
+                if self.tracker_status:
+                    self.tracker_status.config(text="Match finished.", fg=GREEN)
+            self.select_match(m)
         if self.tracker_running:
-            self.tracker_job = self.root.after(5000, self.tracker_tick)
-        else:
-            self.tracker_job = None
+            self.tracker_job = self.root.after(5000, self._tracker_tick)
 
     def stop_tracker(self):
         self.tracker_running = False
-        if self.tracker_job is not None:
+        if self.tracker_job:
             self.root.after_cancel(self.tracker_job)
             self.tracker_job = None
-        self.tracker_status.config(text="Live tracker stopped.", fg=MUTED)
-
-    def switch_live_api(self):
-        self.status_label.config(text="Live API switch requested. Local mock data still active.")
+        if self.tracker_status:
+            self.tracker_status.config(text="Tracker stopped.", fg=MUTED)
 
     def test_speed(self):
-        self.status_label.config(text=f"Last Load: instant  |  Matches: {len(self.filtered_matches())}")
+        if self.status_label:
+            self.status_label.config(
+                text=f"Speed test: {len(self.filtered_matches())} matches filtered instantly")
 
-    def on_mousewheel(self, event):
-        widget = self.root.focus_get()
-        if widget is not None and str(widget).startswith(str(self.matches_canvas)):
-            self.matches_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+    # ──────────────────────────────────────────
+    # Stats engine
+    # ──────────────────────────────────────────
 
-    def clear(self, parent):
-        for child in parent.winfo_children():
-            child.destroy()
+    def _max_minute(self, m):
+        return max(m.get("minute",1),1) if m.get("status")=="LIVE" else 90
+
+    def _ref_minute(self, m):
+        if m.get("status")=="LIVE": return max(m.get("minute",1),1)
+        if m.get("status")=="UP":   return 0
+        return 90
+
+    def _cur_minute(self, m):
+        mx = self._max_minute(m)
+        if self.replay_minute is None: return self._ref_minute(m)
+        return max(0, min(int(self.replay_minute), mx))
+
+    def _curve(self, r):
+        r = max(0.0, min(r, 1.0))
+        if r<=0: return 0.0
+        if r>=1: return 1.0
+        return min(1.0, max(0.0, (r**0.84)*(0.92+r*0.08)))
+
+    def _base_stats(self, m):
+        e = max(m.get("edge",0), 0)
+        return [
+            ("Expected goals (xG)", round(0.8+e/10,2), round(0.7+abs(min(m.get("edge",0),0))/10,2)),
+            ("Shots on target", 5 if m.get("home_score",0) else 2, 3 if m.get("away_score",0) else 2),
+            ("Shots off target",6,4),("Blocked shots",4,2),
+            ("Possession (%)", 54 if m.get("edge",0)>=0 else 47, 46 if m.get("edge",0)>=0 else 53),
+            ("Corner kicks",6,3),("Offsides",1,2),("Fouls",10,8),
+            ("Throw ins",19,21),("Yellow cards",1,1),
+            ("Crosses",14,10),("Goalkeeper saves",2,4),
+        ]
+
+    def _stats_at(self, m, mn, mx=90):
+        ratio = 0 if mx<=0 else max(0.0, min(mn/mx, 1.0))
+        bias  = ((m.get("id",1)%5)-2)/14
+        rows  = []
+        for lbl, fh, fa in self._base_stats(m):
+            if lbl == "Possession (%)":
+                sw = bias*(0.6-ratio)*18
+                hs = max(32,min(68,fh+sw))
+                rows.append((lbl, int(round(hs)), int(round(100-hs))))
+                continue
+            hp = max(0.0, ratio+bias*0.18)
+            ap = max(0.0, ratio-bias*0.18)
+            if lbl == "Expected goals (xG)":
+                rows.append((lbl, round(fh*self._curve(hp),2), round(fa*self._curve(ap),2)))
+            else:
+                rows.append((lbl, int(round(fh*self._curve(hp))), int(round(fa*self._curve(ap)))))
+        if m.get("status")=="UP" and mn==0:
+            return [(lbl, 50 if lbl=="Possession (%)" else 0.0 if lbl=="Expected goals (xG)" else 0,
+                         50 if lbl=="Possession (%)" else 0.0 if lbl=="Expected goals (xG)" else 0)
+                    for lbl,_,_ in rows]
+        return rows
+
+    def _smap(self, m, mn=None, mx=None):
+        if mx is None: mx = self._max_minute(m)
+        if mn is None: mn = self._cur_minute(m)
+        return {lbl:(h,a) for lbl,h,a in self._stats_at(m,mn,mx)}
+
+    def _split(self, l, r):
+        t = l+r
+        if t<=0: return 50,50
+        lp = int(round(l/t*100))
+        return lp, max(0,100-lp)
+
+    def _stats_summary(self, m, mn, mx=90):
+        s = {lbl:(h,a) for lbl,h,a in self._stats_at(m,mn,mx)}
+        xh,xa = s.get("Expected goals (xG)",(0.0,0.0))
+        sh,sa = s.get("Shots on target",(0,0))
+        ph,pa = s.get("Possession (%)",(50,50))
+        ch,ca = s.get("Corner kicks",(0,0))
+        return [
+            ("xG Share",    *self._split(xh,xa)),
+            ("Shot Quality",*self._split(sh,sa)),
+            ("Possession",  int(ph),int(pa)),
+            ("Pressure",    *self._split(ch,ca)),
+        ]
+
+    def _attack_stats(self, m, mn, mx):
+        s = self._smap(m,mn,mx)
+        xh,xa = s.get("Expected goals (xG)",(0.0,0.0))
+        sh,sa = s.get("Shots on target",(0,0))
+        oh,oa = s.get("Shots off target",(0,0))
+        bh,ba = s.get("Blocked shots",(0,0))
+        ch,ca = s.get("Crosses",(0,0))
+        kh,ka = s.get("Corner kicks",(0,0))
+        return [
+            ("Expected goals (xG)",xh,xa),
+            ("Shots on target",sh,sa),("Shots off target",oh,oa),
+            ("Blocked shots",bh,ba),
+            ("Big chances",max(0,int(round(sh*0.6+xh*1.5))),max(0,int(round(sa*0.6+xa*1.5)))),
+            ("Touches in box",sh+oh+int(round(ch*0.4)),sa+oa+int(round(ca*0.4))),
+            ("Crosses",ch,ca),("Set-piece threat",kh,ka),
+        ]
+
+    def _attack_summary(self, m, mn, mx):
+        rows = {l:(h,a) for l,h,a in self._attack_stats(m,mn,mx)}
+        return [
+            ("xG Threat",  *self._split(*rows["Expected goals (xG)"])),
+            ("On Target",  *self._split(*rows["Shots on target"])),
+            ("Box Threat", *self._split(*rows["Touches in box"])),
+        ]
+
+    def _control_stats(self, m, mn, mx):
+        s = self._smap(m,mn,mx)
+        ph,pa = s.get("Possession (%)",(50,50))
+        th,ta = s.get("Throw ins",(0,0))
+        ch,ca = s.get("Corner kicks",(0,0))
+        xh,xa = s.get("Crosses",(0,0))
+        r = 0 if mx<=0 else max(0.0,min(mn/mx,1.0))
+        return [
+            ("Possession (%)",ph,pa),
+            ("Pass accuracy (%)",int(round(76+ph*0.18+r*4)),int(round(76+pa*0.18+r*4))),
+            ("Field tilt (%)",int(round(min(78,max(22,ph+ch*2+m.get("edge",0)*1.5)))),0),
+            ("Corners won",ch,ca),("Cross volume",xh,xa),
+            ("Tempo actions",max(1,int(round((th+ch+xh)*0.9))),max(1,int(round((ta+ca+xa)*0.9)))),
+        ]
+
+    def _control_summary(self, m, mn, mx):
+        rows = {l:(h,a) for l,h,a in self._control_stats(m,mn,mx)}
+        return [
+            ("Possession", *rows["Possession (%)"]),
+            ("Corners",    *self._split(*rows["Corners won"])),
+        ]
+
+    def _defense_stats(self, m, mn, mx):
+        s = self._smap(m,mn,mx)
+        fh,fa = s.get("Fouls",(0,0))
+        yh,ya = s.get("Yellow cards",(0,0))
+        svh,sva=s.get("Goalkeeper saves",(0,0))
+        bh,ba = s.get("Blocked shots",(0,0))
+        r = 0 if mx<=0 else max(0.0,min(mn/mx,1.0))
+        dh=max(1,int(round(9+r*11+max(m.get("edge",0),0))))
+        da=max(1,int(round(9+r*11+abs(min(m.get("edge",0),0)))))
+        return [
+            ("Goalkeeper saves",svh,sva),("Blocked shots",bh,ba),
+            ("Duels won",dh,da),("Fouls committed",fh,fa),("Yellow cards",yh,ya),
+        ]
+
+    def _defense_summary(self, m, mn, mx):
+        rows = {l:(h,a) for l,h,a in self._defense_stats(m,mn,mx)}
+        return [
+            ("Save Load",  *self._split(*rows["Goalkeeper saves"])),
+            ("Duels",      *self._split(*rows["Duels won"])),
+            ("Discipline", *self._split(max(1,5-rows["Yellow cards"][0]),max(1,5-rows["Yellow cards"][1]))),
+        ]
+
+    # ──────────────────────────────────────────
+    # Snapshot / Decision engine data
+    # ──────────────────────────────────────────
+
+    def _snapshot(self, m):
+        cons      = self._consensus(m)
+        odds      = self._odds_rows(m)
+        best      = max(odds, key=lambda x: x[4])
+        if cons["pick"] == m.get("home"):
+            mp = round(100/best[1])
+        elif cons["pick"] == m.get("away"):
+            mp = round(100/best[3])
+        else:
+            mp = round(100/best[2])
+        tp   = cons["confidence"]
+        edge = round(tp - mp, 1)
+        dq   = self._data_quality(m)
+        ls   = self._lineup_status(m)
+        wth  = self._weather(m)
+        mm   = self._mkt_move(m)
+
+        dec = "PASS"; dc = MUTED
+        if dq>=82 and edge>=5 and ls=="Confirmed": dec,dc = "BET",GREEN
+        elif dq>=70 and edge>=2:                   dec,dc = "LEAN",ORANGE
+
+        rf = [
+            f"Consensus leans {cons['pick']} with {cons['confidence']}% confidence.",
+            f"Best book is {best[0]} — {edge:+.1f} implied edge.",
+            f"Form: {m.get('home','')} {''.join(m.get('home_form',['?']*5))} vs {m.get('away','')} {''.join(m.get('away_form',['?']*5))}.",
+        ]
+        if m.get("status")=="LIVE":
+            rf.append(f"Live at {m.get('minute',0)}' — score {m.get('home_score',0)}-{m.get('away_score',0)}.")
+        ra = [
+            f"Market move is {mm.lower()} — late entries may lose value.",
+            f"{wth} conditions. Referee: {m.get('referee','')}.",
+            "Source disagreement matters even when average consensus looks strong.",
+        ]
+        mis = self._missing(m)
+        if mis != ["None"]:
+            ra.append(f"Weak inputs: {', '.join(mis)}.")
+
+        return {
+            "decision": dec, "decision_color": dc,
+            "market": f"{best[0]} best price  |  pick {cons['pick']}",
+            "confidence": tp, "edge": edge,
+            "true_prob": tp, "market_prob": mp, "data_quality": dq,
+            "freshness": self._freshness(m),
+            "lineups": ls, "lineup_color": GREEN if ls=="Confirmed" else YELLOW if ls=="Partial" else RED,
+            "weather": wth, "news_status": self._news(m),
+            "reasons_for": rf, "reasons_against": ra,
+            "data_buckets": [
+                ("Match state",  f"{m.get('status','')} {m.get('minute',0)}'  {m.get('home_score',0)}-{m.get('away_score',0)}"),
+                ("Team profile", f"Atk {m.get('home_avg',0):.1f}/{m.get('away_avg',0):.1f}  form {''.join(m.get('home_form',['?']*5))}/{''.join(m.get('away_form',['?']*5))}"),
+                ("Availability", f"Lineups {ls}"),
+                ("Market",       f"{len(odds)} books  best {best[0]}  {mm}"),
+                ("Context",      f"{wth}  {m.get('venue','')}"),
+            ],
+            "sources": [
+                ("Lineups",       "Squads",    ls,                                      "High"),
+                ("Local News",    "Context",   "Confirmed" if m.get("status")=="LIVE" else "Checking", "Medium"),
+                ("Weather",       "External",  "Fresh",                                 "Medium"),
+                ("Odds Feed",     "Market",    "Live",                                  "High"),
+                ("Pred Feed",     "Consensus", "Live",                                  "Medium"),
+            ],
+            "consensus_spread": len([r[4] for r in self._pred_rows(m) if r[4]==cons["pick"]]),
+            "books_tracked": len(odds),
+            "prediction_sources": len(self._pred_rows(m)),
+            "market_move": mm,
+            "referee_note": "card-heavy" if any(n in m.get("referee","") for n in ("Taylor","Oliver")) else "balanced",
+        }
+
+    def _data_quality(self, m):
+        s = 76
+        if m.get("status")=="LIVE": s+=6
+        if abs(m.get("edge",0))>=4: s+=4
+        if m.get("minute",0)==0:    s-=3
+        return max(55, min(s, 94))
+
+    def _freshness(self, m):
+        if m.get("status")=="LIVE": return "15s live"
+        if m.get("minute",0)==0:    return "5m pre"
+        return "30m old"
+
+    def _lineup_status(self, m):
+        if m.get("status")=="LIVE": return "Confirmed"
+        if m.get("minute",0)==0 and m.get("edge",0)>=4: return "Partial"
+        return "Pending"
+
+    def _weather(self, m):
+        return {"England":"Light rain 11C","Spain":"Clear 17C",
+                "Italy":"Calm 15C","Germany":"Windy 9C"}.get(m.get("country",""),"Normal 14C")
+
+    def _news(self, m):
+        return "2 reports checked" if m.get("status")=="LIVE" else "Awaiting pressers"
+
+    def _mkt_move(self, m):
+        e = m.get("edge",0)
+        return "Sharp to away" if e<-2 else "Mild to home" if e>4 else "Flat market"
+
+    def _missing(self, m):
+        out = []
+        if m.get("status")!="LIVE":    out.append("confirmed lineups")
+        if abs(m.get("edge",0))<2:      out.append("clear discrepancy")
+        return out or ["None"]
+
+    def _consensus(self, m):
+        rows = self._pred_rows(m)
+        ha = round(sum(r[1] for r in rows)/len(rows))
+        da = round(sum(r[2] for r in rows)/len(rows))
+        aa = round(sum(r[3] for r in rows)/len(rows))
+        pick = m.get("home") if ha>=da and ha>=aa else m.get("away") if aa>=da else "Draw"
+        return {"home":ha,"draw":da,"away":aa,"pick":pick,"confidence":max(ha,da,aa)}
+
+    def _odds_rows(self, m):
+        bh,bd,ba = m.get("odds",(2.0,3.5,4.0))
+        books = [
+            ("DraftKings",-0.02,0.04,0.03),("FanDuel",0.03,-0.03,0.02),
+            ("BetMGM",0.01,0.02,-0.04),("Caesars",-0.04,0.05,0.01),
+            ("bet365",0.02,-0.01,0.04),("Pinnacle",0.05,0.03,-0.02),
+            ("BetRivers",-0.01,-0.04,0.05),("Unibet",0.04,0.00,-0.01),
+        ]
+        return [(book, max(1.01,bh+h), max(1.01,bd+d), max(1.01,ba+a),
+                 round(m.get("edge",0)+((i%4)-1.5)*0.7,1))
+                for i,(book,h,d,a) in enumerate(books)]
+
+    def _odds_detail_rows(self, m, book_name):
+        br = next((r for r in self._odds_rows(m) if r[0]==book_name), self._odds_rows(m)[0])
+        _,home,draw,away,_ = br
+        return [
+            ("1X2",         f"{home:.2f}", f"{draw:.2f}", f"{away:.2f}", "main line"),
+            ("Double Chance","1X 1.22",    "",            "X2 1.61",     "safer"),
+            ("Over/Under 2.5","Over 1.91", "",            "Under 1.95",  "tight"),
+            ("BTTS",        "Yes 1.68",    "",            "No 2.18",     "live pace"),
+            ("Asian Handicap",f"{m.get('home','')} -0.25","",f"{m.get('away','')} +0.25","model value"),
+            ("Corners O/U 9.5","Over 1.87","",            "Under 1.98",  "edge small"),
+        ]
+
+    def _pred_rows(self, m):
+        home,draw,away = m.get("pred",(33,33,34))
+        sources = [
+            ("Opta",3,-1,-2),("Forebet",-2,1,1),("PredictZ",1,2,-3),
+            ("SportsMole",-1,-2,3),("WinDrawWin",2,0,-2),
+            ("Betimate",-3,3,0),("SoccerVista",0,-1,1),
+            ("Our Model",round(m.get("edge",0)),0,-round(m.get("edge",0))),
+        ]
+        rows = []
+        for src,ha,da,aa in sources:
+            h=max(1,min(98,int(home+ha))); d=max(1,min(98,int(draw+da))); a=max(1,min(98,int(away+aa)))
+            t=h+d+a; h=round(h*100/t); d=round(d*100/t); a=max(1,100-h-d)
+            pick = m.get("home") if h>=d and h>=a else m.get("away") if a>=d else "Draw"
+            rows.append((src,h,d,a,pick))
+        return rows
+
+    def _pred_detail_data(self, m, source_name):
+        row = next((r for r in self._pred_rows(m) if r[0]==source_name), self._pred_rows(m)[0])
+        _,home,draw,away,pick = row
+        return {
+            "headline": f"{source_name} leans {pick} for {m.get('home','')} vs {m.get('away','')}",
+            "markets": [
+                ("1X2",        f"{home}% / {draw}% / {away}%"),
+                ("Over 2.5",   f"{min(78,away+12)}%"),
+                ("Under 2.5",  f"{max(22,100-away-12)}%"),
+                ("BTTS",       f"{52+(m.get('home_score',0)+m.get('away_score',0))*6}%"),
+            ],
+        }
+
+    # ──────────────────────────────────────────
+    # Pitch drawing
+    # ──────────────────────────────────────────
+
+    def _draw_pitch(self, canvas, m, mn):
+        canvas.delete("all")
+        W = max(canvas.winfo_width(), 860); H = max(canvas.winfo_height(), 480)
+        mg = 20
+        canvas.create_rectangle(mg,mg,W-mg,H-mg,outline="#d5e59b",width=2)
+        canvas.create_line(W/2,mg,W/2,H-mg,fill="#d5e59b",width=2)
+        canvas.create_oval(W/2-50,H/2-50,W/2+50,H/2+50,outline="#d5e59b",width=2)
+        canvas.create_oval(W/2-4,H/2-4,W/2+4,H/2+4,fill="#d5e59b",outline="")
+        self._penalty_box(canvas,W,H,mg,True)
+        self._penalty_box(canvas,W,H,mg,False)
+        canvas.create_text(mg+6,8,text=f"{m.get('home','')}  {self._lineup_formation(m,'home',mn)}",fill=TEXT,font=FB,anchor="nw")
+        canvas.create_text(W-mg-6,8,text=f"{m.get('away','')}  {self._lineup_formation(m,'away',mn)}",fill=TEXT,font=FB,anchor="ne")
+        self._draw_team(canvas,self._lineup_players(m,"home",mn),W,H,mg,"left",True)
+        self._draw_team(canvas,self._lineup_players(m,"away",mn),W,H,mg,"right",False)
+
+    def _penalty_box(self, canvas, W, H, mg, left):
+        if left:
+            x0,x1,sx1 = mg,mg+120,mg+48
+        else:
+            x0,x1,sx1 = W-mg-120,W-mg,W-mg-48
+        canvas.create_rectangle(x0,H*0.22,x1,H*0.78,outline="#d5e59b",width=2)
+        if left:
+            canvas.create_rectangle(x0,H*0.38,sx1,H*0.62,outline="#d5e59b",width=2)
+        else:
+            canvas.create_rectangle(sx1,H*0.38,x1,H*0.62,outline="#d5e59b",width=2)
+
+    def _draw_team(self, canvas, players, W, H, mg, side, is_home):
+        cf = "#101826" if is_home else "#f8fafc"
+        tf = TEXT if is_home else "#0f172a"
+        ac = ORANGE if is_home else CYAN
+        uw = W-(mg*2); uh = H-(mg*2)
+        for pl in players:
+            xn = 1-pl["y"] if side=="left" else pl["y"]
+            x  = mg+uw*xn; y = mg+uh*pl["x"]
+            r  = 16
+            if pl.get("sub"):
+                canvas.create_oval(x-r-3,y-r-3,x+r+3,y+r+3,outline=ac,width=2)
+            canvas.create_oval(x-r,y-r,x+r,y+r,fill=cf,outline="")
+            canvas.create_text(x,y,text=str(pl["number"]),fill=tf,font=FB)
+            canvas.create_text(x,y+24,text=pl["name"],fill=TEXT,font=FS)
+
+    def _lineup_formation(self, m, side, mn):
+        if side=="home": return "4-3-3" if mn<58 else "4-2-3-1"
+        return "3-5-2" if mn<63 else "4-4-2"
+
+    def _lineup_players(self, m, side, mn):
+        if side=="home":
+            pl = [
+                {"name":"Ederson","number":31,"x":0.50,"y":0.92},
+                {"name":"Walker","number":2,"x":0.18,"y":0.79},
+                {"name":"Dias","number":3,"x":0.38,"y":0.76},
+                {"name":"Gvardiol","number":24,"x":0.62,"y":0.76},
+                {"name":"Ake","number":6,"x":0.82,"y":0.79},
+                {"name":"Rodri","number":16,"x":0.50,"y":0.63},
+                {"name":"De Bruyne","number":17,"x":0.30,"y":0.57},
+                {"name":"Bernardo","number":20,"x":0.70,"y":0.57},
+                {"name":"Foden","number":47,"x":0.20,"y":0.38},
+                {"name":"Haaland","number":9,"x":0.50,"y":0.31},
+                {"name":"Doku","number":11,"x":0.80,"y":0.38},
+            ]
+            if mn>=58:
+                pl[10]={"name":"Grealish","number":10,"x":0.80,"y":0.44,"sub":True}
+                pl[6] ={"name":"Kovacic","number":8,"x":0.34,"y":0.60,"sub":True}
+            return pl
+        pl = [
+            {"name":"Alisson","number":1,"x":0.50,"y":0.08},
+            {"name":"Konate","number":5,"x":0.24,"y":0.19},
+            {"name":"Van Dijk","number":4,"x":0.50,"y":0.16},
+            {"name":"Robertson","number":26,"x":0.76,"y":0.19},
+            {"name":"Alexander-Arnold","number":66,"x":0.12,"y":0.32},
+            {"name":"Mac Allister","number":10,"x":0.34,"y":0.30},
+            {"name":"Szoboszlai","number":8,"x":0.50,"y":0.28},
+            {"name":"Gravenberch","number":38,"x":0.66,"y":0.30},
+            {"name":"Diaz","number":7,"x":0.88,"y":0.32},
+            {"name":"Salah","number":11,"x":0.36,"y":0.47},
+            {"name":"Nunez","number":9,"x":0.64,"y":0.47},
+        ]
+        if mn>=63:
+            pl[9]={"name":"Jota","number":20,"x":0.34,"y":0.44,"sub":True}
+            pl[6]={"name":"Jones","number":17,"x":0.50,"y":0.28,"sub":True}
+        return pl
+
+    # ──────────────────────────────────────────
+    # Table / H2H data
+    # ──────────────────────────────────────────
+
+    def _table_rows(self, m):
+        base = [
+            ("Inter",33,49,78,25),("Napoli",33,15,66,20),("AC Milan",33,20,64,18),
+            ("Juventus",32,26,60,17),("Como 1907",33,29,58,16),("AS Roma",33,17,58,18),
+            ("Atalanta",33,16,54,14),("Bologna",32,5,48,14),("Lazio",33,4,47,12),
+            ("Udinese",33,-5,43,12),("Torino",33,-17,40,11),("Salernitana",33,-22,28,7),
+        ]
+        teams = [r[0] for r in base]
+        if m.get("home") not in teams: base.insert(4,(m.get("home",""),33,8,51,13))
+        if m.get("away") not in teams: base.insert(2,(m.get("away",""),33,20,64,18))
+        return [(i,*r) for i,r in enumerate(base[:14],start=1)]
+
+    def _h2h_rows(self, m):
+        h = m.get("home",""); a = m.get("away","")
+        return [
+            ("2025",a,h,3,0),("2024/25",a,h,1,0),
+            ("2024",h,a,0,1),("2023/24",h,a,1,3),
+            ("2023",a,h,1,0),("2022/23",a,h,3,1),
+        ]
+
+    # ──────────────────────────────────────────
+    # Events / timeline
+    # ──────────────────────────────────────────
+
+    def _ev_color(self, ev):
+        return {"GOAL":ORANGE,"CARD":YELLOW,"SUB":CYAN,"SHOT":CYAN,
+                "SAVE":CYAN,"PRESS":GREEN,"VAR":PURPLE,"PEN":RED}.get(ev,CYAN)
+
+    def _match_events(self, m):
+        if m.get("status")=="LIVE":
+            return [
+                ("09'",m.get("home",""),"SHOT","Early chance forced a save"),
+                ("24'",m.get("home",""),"CARD","Tactical foul in transition"),
+                ("41'",m.get("away",""),"GOAL",f"{m.get('away','')} took the lead"),
+                ("HT","Match","SCORE",f"{m.get('home_score',0)}-{m.get('away_score',0)} at half"),
+                ("58'",m.get("home",""),"SUB","Fresh winger to raise tempo"),
+                (f"{m.get('minute',0)}'",m.get("home",""),"PRESS","Home pressing higher now"),
+            ]
+        if m.get("minute",0)==0:
+            return [("00'","Match","INFO","Pre-match — awaiting kickoff")]
+        return [
+            ("12'",m.get("home",""),"SHOT","Early chance saved"),
+            ("27'",m.get("away",""),"GOAL","Back-post finish"),
+            ("49'",m.get("home",""),"SUB","Midfield change"),
+            ("68'",m.get("away",""),"CARD","Late challenge"),
+            ("FT","Match","SCORE",f"{m.get('home_score',0)}-{m.get('away_score',0)} full time"),
+        ]
+
+    def _timeline_events(self, m, maxm):
+        events = []
+        for mt, team, ev, detail in self._match_events(m):
+            mn = self._ev_minute(mt, maxm)
+            if mn is None: continue
+            events.append({"minute":mn,"minute_text":mt,
+                "team":team or "Match","event":ev,"detail":detail})
+        return events
+
+    def _ev_minute(self, txt, maxm):
+        t = str(txt).strip().upper().replace("'","")
+        if t=="HT": return min(45,maxm)
+        if t=="FT": return maxm
+        d = "".join(c for c in t if c.isdigit())
+        return min(int(d),maxm) if d else None
+
+    # ──────────────────────────────────────────
+    # Challenge / accuracy stubs
+    # ──────────────────────────────────────────
+
+    def _seed_challenge_history(self):
+        return []
+
+    def _settle_challenges(self, m):
+        pass
+
+    def _match_finished(self, m):
+        return m.get("status") in ("FT","FINISHED") or (m.get("minute",0)>=90 and m.get("status")!="UP")
+
+    def _state(self, m):
+        return MatchState(
+            home_team=m.get("home",""), away_team=m.get("away",""),
+            minute=int(m.get("minute",0)),
+            home_goals=int(m.get("home_score",0)), away_goals=int(m.get("away_score",0)),
+            stoppage_minutes_remaining=0, home_red_cards=0, away_red_cards=0,
+            pressure_bias=1 if m.get("edge",0)>0 else 0)
+
+    def _market(self, m):
+        return MarketInput(total_line=2.5,
+            draw_cents=m.get("draw_price",33.0),
+            under_cents=m.get("under_price",50.0),
+            over_cents=m.get("over_price",50.0))
+
+    # ──────────────────────────────────────────
+    # Main loop
+    # ──────────────────────────────────────────
 
     def mainloop(self):
         self.root.mainloop()
