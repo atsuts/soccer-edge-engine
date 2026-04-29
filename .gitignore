@@ -3,3 +3,9 @@ __pycache__/
 analysis_history.csv
 .env
 *.log
+.env
+keys/
+logs/
+data/paper_trades/
+__pycache__/
+*.pyc
