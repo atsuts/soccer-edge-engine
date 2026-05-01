@@ -97,38 +97,39 @@ def normalize_orderbook(raw: dict, ticker: str) -> Optional[OrderbookSnapshot]:
         snap  = OrderbookSnapshot(ticker=ticker, timestamp=ts)
 
         # ── Parse YES bids from API ─────────────────────────────────────
-        # These are buy orders on the YES side
+        # Kalshi orderbook prices are integer cents (0-100).
+        # We store as dollar floats (0.0-1.0) to match MarketSnapshot.
         for lvl in ob.get("yes", []):
-            price = float(lvl.get("price", 0))
-            qty   = int(lvl.get("delta", lvl.get("quantity", 0)))
-            if price > 0 and qty > 0:
+            raw_price = lvl.get("price", 0)
+            qty       = int(lvl.get("delta", lvl.get("quantity", 0)))
+            price = parse_kalshi_price(raw_price)
+            if price is not None and price > 0 and qty > 0:
                 snap.yes_bids.append(OrderbookLevel(price=price, quantity=qty))
 
         # ── Parse NO bids from API ──────────────────────────────────────
-        # These are buy orders on the NO side
         for lvl in ob.get("no", []):
-            price = float(lvl.get("price", 0))
-            qty   = int(lvl.get("delta", lvl.get("quantity", 0)))
-            if price > 0 and qty > 0:
+            raw_price = lvl.get("price", 0)
+            qty       = int(lvl.get("delta", lvl.get("quantity", 0)))
+            price = parse_kalshi_price(raw_price)
+            if price is not None and price > 0 and qty > 0:
                 snap.no_bids.append(OrderbookLevel(price=price, quantity=qty))
 
-        # ── Derive asks using the 100-cent complement ───────────────────
+        # ── Derive asks using the 1.0 complement ─────────────────────
         #
-        # Since YES + NO = 100 cents at settlement:
-        #   YES ask = 100 - NO best bid
-        #   NO ask  = 100 - YES best bid
+        # Since YES + NO = $1.00 at settlement (dollar representation):
+        #   YES ask = 1.0 - NO best bid
+        #   NO ask  = 1.0 - YES best bid
         #
-        # Example: YES best bid = 44c → NO ask = 100 - 44 = 56c
-        #          NO best bid  = 56c → YES ask = 100 - 56 = 44c
+        # Example: YES best bid = 0.44 → NO ask = 1.0 - 0.44 = 0.56
+        #          NO best bid  = 0.56 → YES ask = 1.0 - 0.56 = 0.44
         #
-        # We derive the ask levels by inverting the opposite side's bids.
         for lvl in snap.no_bids:
-            derived_yes_ask = round(100.0 - lvl.price, 1)
+            derived_yes_ask = round(1.0 - lvl.price, 6)
             snap.yes_asks.append(OrderbookLevel(
                 price=derived_yes_ask, quantity=lvl.quantity))
 
         for lvl in snap.yes_bids:
-            derived_no_ask = round(100.0 - lvl.price, 1)
+            derived_no_ask = round(1.0 - lvl.price, 6)
             snap.no_asks.append(OrderbookLevel(
                 price=derived_no_ask, quantity=lvl.quantity))
 
@@ -174,46 +175,36 @@ def calculate_best_bid_ask(snap: OrderbookSnapshot) -> OrderbookSnapshot:
     if snap.no_asks:
         snap.no_best_ask = snap.no_asks[0].price
 
-    # ── Cross-derive any missing prices ────────────────────────────────
-    # If YES ask is still missing, derive from NO bid
+    # ── Cross-derive any missing prices (dollar complement: YES + NO = 1.0) ──
     if snap.yes_best_ask is None and snap.no_best_bid is not None:
-        snap.yes_best_ask = round(100.0 - snap.no_best_bid, 1)
-
-    # If NO ask is still missing, derive from YES bid
+        snap.yes_best_ask = round(1.0 - snap.no_best_bid, 6)
     if snap.no_best_ask is None and snap.yes_best_bid is not None:
-        snap.no_best_ask = round(100.0 - snap.yes_best_bid, 1)
-
-    # If YES bid missing, derive from NO ask
+        snap.no_best_ask = round(1.0 - snap.yes_best_bid, 6)
     if snap.yes_best_bid is None and snap.no_best_ask is not None:
-        snap.yes_best_bid = round(100.0 - snap.no_best_ask, 1)
-
-    # If NO bid missing, derive from YES ask
+        snap.yes_best_bid = round(1.0 - snap.no_best_ask, 6)
     if snap.no_best_bid is None and snap.yes_best_ask is not None:
-        snap.no_best_bid = round(100.0 - snap.yes_best_ask, 1)
+        snap.no_best_bid = round(1.0 - snap.yes_best_ask, 6)
 
-    # ── Spreads ─────────────────────────────────────────────────────────
+    # ── Spreads (in dollars; 0.01 = 1 cent) ────────────────────────────
     if snap.yes_best_bid is not None and snap.yes_best_ask is not None:
-        snap.yes_spread = round(snap.yes_best_ask - snap.yes_best_bid, 1)
-
+        snap.yes_spread = round(snap.yes_best_ask - snap.yes_best_bid, 6)
     if snap.no_best_bid is not None and snap.no_best_ask is not None:
-        snap.no_spread = round(snap.no_best_ask - snap.no_best_bid, 1)
+        snap.no_spread = round(snap.no_best_ask - snap.no_best_bid, 6)
 
-    # ── Total quantity (liquidity proxy) ────────────────────────────────
+    # ── Total quantity and liquidity score ──────────────────────────────
     snap.total_yes_qty = sum(l.quantity for l in snap.yes_bids + snap.yes_asks)
     snap.total_no_qty  = sum(l.quantity for l in snap.no_bids  + snap.no_asks)
     total_qty = snap.total_yes_qty + snap.total_no_qty
 
-    # ── Liquidity score ─────────────────────────────────────────────────
-    # Based on total quantity available across all levels.
-    # Thresholds are approximate — tune with real data.
     avg_spread = None
     spreads = [s for s in [snap.yes_spread, snap.no_spread] if s is not None]
     if spreads:
         avg_spread = sum(spreads) / len(spreads)
 
-    if total_qty >= 500 and avg_spread is not None and avg_spread <= 2:
+    # Thresholds in dollars: 0.02 = 2 cents, 0.04 = 4 cents
+    if total_qty >= 500 and avg_spread is not None and avg_spread <= 0.02:
         snap.liquidity = "High"
-    elif total_qty >= 100 or (avg_spread is not None and avg_spread <= 4):
+    elif total_qty >= 100 or (avg_spread is not None and avg_spread <= 0.04):
         snap.liquidity = "Medium"
     else:
         snap.liquidity = "Low"
@@ -226,30 +217,67 @@ def enrich_snapshot_from_orderbook(
     ob:   OrderbookSnapshot,
 ) -> 'MarketSnapshot':
     """
-    Update a MarketSnapshot with live orderbook prices.
-    Only overwrites prices if the orderbook has valid data.
+    Enrich a MarketSnapshot with orderbook prices — but never erase
+    valid market-level prices that already exist.
+
+    Priority:
+      1. Orderbook best bid/ask (most current, from live depth)
+      2. Market-level *_dollars fields (already on snap from normalize_market)
+      3. None / N/A if neither source has the price
+
+    Kalshi orderbook returns only bids for each side.
+    Asks are inferred using the 1.00 complement:
+      YES ask = 1.0 - NO best bid    (if no_bid exists)
+      NO ask  = 1.0 - YES best bid   (if yes_bid exists)
 
     Args:
-        snap: Existing MarketSnapshot (may have stale/mock prices)
-        ob:   Fresh OrderbookSnapshot from API
-
-    Returns:
-        Updated MarketSnapshot with live bid/ask/spread/liquidity.
+        snap: MarketSnapshot that may already have prices from *_dollars fields
+        ob:   OrderbookSnapshot from GET /markets/{ticker}/orderbook
     """
     if ob is None:
         return snap
 
-    # Update YES side
+    # ── Orderbook best bids (direct from API) ──────────────────────────
+    # Only overwrite if orderbook has a real value — never set to None
     if ob.yes_best_bid is not None:
-        snap.yes_bid = ob.yes_best_bid
-    if ob.yes_best_ask is not None:
-        snap.yes_ask = ob.yes_best_ask
-
-    # Update NO side
+        snap.yes_bid = ob.yes_best_bid    # dollars (0.0–1.0)
     if ob.no_best_bid is not None:
         snap.no_bid = ob.no_best_bid
+
+    # ── Orderbook asks (inferred from opposite side bids) ──────────────
+    # Kalshi orderbook only returns bids; asks come from the complement rule.
+    # Only fill if orderbook provides the data; fallback keeps existing value.
+    if ob.yes_best_ask is not None:
+        snap.yes_ask = ob.yes_best_ask
+    elif ob.no_best_bid is not None and snap.yes_ask is None:
+        # Infer YES ask from NO bid: YES_ask = 1.0 - NO_bid
+        snap.yes_ask = round(1.0 - ob.no_best_bid, 6)
+
     if ob.no_best_ask is not None:
         snap.no_ask = ob.no_best_ask
+    elif ob.yes_best_bid is not None and snap.no_ask is None:
+        # Infer NO ask from YES bid: NO_ask = 1.0 - YES_bid
+        snap.no_ask = round(1.0 - ob.yes_best_bid, 6)
+
+    # ── Complement rule on what we now have ────────────────────────────
+    # Fill any remaining gaps using whatever prices we have
+    if snap.yes_bid is not None and snap.no_ask is None:
+        snap.no_ask = round(1.0 - snap.yes_bid, 6)
+    if snap.yes_ask is not None and snap.no_bid is None:
+        snap.no_bid = round(1.0 - snap.yes_ask, 6)
+    if snap.no_bid is not None and snap.yes_ask is None:
+        snap.yes_ask = round(1.0 - snap.no_bid, 6)
+    if snap.no_ask is not None and snap.yes_bid is None:
+        snap.yes_bid = round(1.0 - snap.no_ask, 6)
+
+    # ── Pick better side ───────────────────────────────────────────────
+    ya, na = snap.yes_ask, snap.no_ask
+    if ya is not None and na is not None:
+        snap.side = "YES" if ya <= na else "NO"
+    elif ya is not None:
+        snap.side = "YES"
+    elif na is not None:
+        snap.side = "NO"
 
     # Update liquidity from orderbook depth
     snap.liquidity_score = ob.liquidity
@@ -272,11 +300,11 @@ class MarketSnapshot:
     title:              str
     category:           str
     side:               str            # "YES" | "NO" — which side we're analyzing
-    yes_bid:            float          # best bid on YES side (cents)
-    yes_ask:            float          # best ask on YES side (cents)
-    no_bid:             float          # best bid on NO side (cents)
-    no_ask:             float          # best ask on NO side (cents)
-    last_price:         float          # most recent trade price (cents)
+    yes_bid:            Optional[float]  # best bid on YES side (cents); None = not available
+    yes_ask:            Optional[float]  # best ask on YES side (cents); None = not available
+    no_bid:             Optional[float]  # best bid on NO side (cents); None = not available
+    no_ask:             Optional[float]  # best ask on NO side (cents); None = not available
+    last_price:         Optional[float]  # most recent trade price (cents); None = no trades
     volume:             int
     open_interest:      int
     expiration_time:    str
@@ -292,44 +320,63 @@ class MarketSnapshot:
     entry_price_est:    Optional[float] = None   # estimated fill price to enter
     exit_price_est:     Optional[float] = None   # estimated fill price to exit
 
+    # Raw API response — stored for debugging, never logged publicly
+    raw_data:           Optional[dict]  = None   # original API dict if available
+
     # ── Derived properties ─────────────────────────────────────────────────
 
     @property
-    def bid_price(self) -> float:
-        """Best bid for the selected side."""
+    def bid_price(self) -> Optional[float]:
+        """Best bid for the selected side. None = not yet loaded."""
         return self.yes_bid if self.side == "YES" else self.no_bid
 
     @property
-    def ask_price(self) -> float:
-        """Best ask for the selected side."""
+    def ask_price(self) -> Optional[float]:
+        """Best ask for the selected side. None = not yet loaded."""
         return self.yes_ask if self.side == "YES" else self.no_ask
 
     @property
-    def spread(self) -> float:
-        """Bid-ask spread for the selected side."""
-        return round(self.ask_price - self.bid_price, 1)
+    def spread(self) -> Optional[float]:
+        """Bid-ask spread. None if either price is missing."""
+        b, a = self.bid_price, self.ask_price
+        if b is None or a is None:
+            return None
+        return round(a - b, 1)
 
     @property
-    def fair_price(self) -> float:
-        """Model fair price — falls back to midpoint if not set."""
+    def fair_price(self) -> Optional[float]:
+        """
+        Model fair price.
+        Returns model estimate if set.
+        Falls back to midpoint only if both bid AND ask are available.
+        Returns None if no price information exists.
+        """
         if self.model_fair_price is not None:
             return self.model_fair_price
-        return round((self.bid_price + self.ask_price) / 2, 1)
+        b, a = self.bid_price, self.ask_price
+        if b is not None and a is not None and a > 0:
+            return round((b + a) / 2, 1)
+        return None
 
     def to_connector_dict(self) -> dict:
         """
         Convert to the dict format expected by market_scanner_engine.
-        Keeps backward compatibility with existing engine.
+        None values are passed through — the engine handles missing prices safely.
+
+        IMPORTANT: model_fair_price is always the explicit model estimate,
+        never the midpoint fallback. If no model has priced this market,
+        model_fair_price = None → engine signals DATA NEEDED.
+        This prevents the engine from treating a midpoint as a real fair value.
         """
         return {
             "market_id":        self.market_id,
             "market_name":      self.title,
             "category":         self.category,
             "side":             self.side,
-            "bid_price":        self.bid_price,
-            "ask_price":        self.ask_price,
-            "last_price":       self.last_price,
-            "model_fair_price": self.fair_price,
+            "bid_price":        self.bid_price,          # None = not loaded
+            "ask_price":        self.ask_price,          # None = not loaded
+            "last_price":       self.last_price,         # None = no trades
+            "model_fair_price": self.model_fair_price,   # None = DATA NEEDED
             "volume":           self.volume,
             "liquidity":        self.liquidity_score,
         }
@@ -337,3 +384,116 @@ class MarketSnapshot:
 
 def now_ts() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def parse_kalshi_price(value, field_name: str = "") -> Optional[float]:
+    """
+    Convert a raw Kalshi price field to an internal dollar float (0.0 – 1.0).
+    Returns None for missing/invalid — never returns 0 for missing data.
+
+    Decision logic (exactly one multiply-by-100 ever happens here):
+      field_name ends with "_dollars":
+        "0.5000" → 0.50  (parse string as dollars, no division needed)
+        "1.0000" → 1.00
+      value is None or "" → None
+      value is float 0.0–1.0 → keep as-is (already dollars)
+      value is int/float 1.0–100 → divide by 100 (legacy cents → dollars)
+      anything else → None (log warning, safe failure)
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if value == "" or value.lower() in ("n/a", "null", "none"):
+            return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    if v == 0.0:
+        return 0.0                      # explicit zero (e.g. unsettled market)
+    elif 0.0 < v <= 1.0:
+        return round(v, 6)              # already dollars — no conversion needed
+    elif 1.0 < v <= 100.0:
+        return round(v / 100.0, 6)      # legacy cents int → dollars
+    else:
+        return None                      # out of range for binary market
+
+
+def format_price(value) -> str:
+    """
+    Format an internal DOLLAR price (0.0–1.0) for display.
+    Multiplies by 100 exactly once.
+
+      0.50  → "50c"
+      1.00  → "100c"
+      0.00  → "0c"    (explicit zero, different from None)
+      None  → "N/A"
+      50.0  → WARNING: this is cents not dollars — returns "N/A" with guard
+
+    Do NOT call this on MarketSignal.bid_price/ask_price (those are cents).
+    Use format_cents() for MarketSignal values.
+    """
+    if value is None:
+        return "N/A"
+    if isinstance(value, str) and value.strip() == "":
+        return "N/A"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+    # Safety guard: internal dollar prices must be 0.0–1.0
+    # Values > 1.0 are cents accidentally passed here — reject them
+    if v > 1.0:
+        return "N/A"   # caller bug: passed cents instead of dollars
+    cents = v * 100.0
+    return f"{int(cents + 0.5)}c"
+
+
+def format_cents(value) -> str:
+    """
+    Format a CENTS value (0–100) for display.
+    Used for MarketSignal.bid_price, ask_price, spread, edge, breakeven etc.
+
+      56.0  → "56c"
+      9.0   → "9c"
+      0.0   → "0c"
+      None  → "N/A"
+    """
+    if value is None:
+        return "N/A"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+    return f"{v:.0f}c"
+
+
+
+
+
+def sanity_check_price(value, label: str = "") -> Optional[float]:
+    """Validate that an internal price is in dollar range (0.0-1.0). Log if not."""
+    if value is None:
+        return None
+    if value > 1.0:
+        print(f"[sanity] WARNING: {label} = {value:.4f} is > 1.0 (should be dollars). "
+              f"Setting to None.")
+        return None
+    return value
+
+
+def debug_market_fields(raw: dict, label: str = "market") -> None:
+    """
+    Log price-related fields from a raw Kalshi API market dict.
+    Safe: never prints API key or private key content.
+    Only prints field names and their values/types.
+    """
+    price_keywords = {"bid","ask","price","last","yes","no","cent","dollar","fee","volume"}
+    print(f"\n[debug] Raw {label}: {raw.get('ticker','?')} price fields below")
+    for k, v in sorted(raw.items()):
+        # Include all price-related fields
+        if any(kw in k.lower() for kw in price_keywords):
+            print(f"  {k:40s} = {repr(v)[:80]}")
+    print()

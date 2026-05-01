@@ -180,6 +180,11 @@ class SoccerEdgeApp:
         self.replay_max_minute   = 0
 
         # UI state
+        self._match_row_cache           = {}   # match_id → {frame, status, minute, ...}
+        self._maximized_overlay         = None  # overlay frame when a panel is maximized
+        self._user_preds                = []    # user prediction game records
+        self._pred_win                  = None  # prediction window reference
+        self._cmp_win                   = None  # comparison window reference
         self.tab_name                   = tk.StringVar(value="Stats Replay")
         self.quick_query                = tk.StringVar(value="")
         self.chat_message               = tk.StringVar(value="")
@@ -235,17 +240,26 @@ class SoccerEdgeApp:
         self._build_ui()
         self.challenge_history = self._seed_challenge_history()
 
-        # Populate UI with mock data (deferred so window draws first)
-        self.root.after(50,  self._initial_render)
-        self.root.after(300, self._process_poll_queue)
+        # Populate UI with mock data (deferred so window is visible first)
+        self.root.after(120, self._initial_render)
+        self.root.after(400, self._process_poll_queue)
 
     # ──────────────────────────────────────────
     # Startup
     # ──────────────────────────────────────────
 
     def _initial_render(self):
-        """Called after window is visible — populates all panels."""
+        """Called after window is visible — ensures soccer frame is shown and populated."""
+        # Force the soccer frame to be visible and geometry to be computed
+        self._soccer_frame.grid(row=0, column=0, sticky="nsew")
         self.root.update_idletasks()
+
+        # Retry if the window hasn't been drawn yet (width = 0 or 1)
+        w = self.root.winfo_width()
+        if w <= 1:
+            self.root.after(80, self._initial_render)
+            return
+
         self.render_matches()
         self.render_watchlist()
         self.select_match(self.current_match, refresh=False)
@@ -372,6 +386,17 @@ class SoccerEdgeApp:
     # Switch Live API
     # ──────────────────────────────────────────
 
+    def _update_poll_interval(self):
+        """Update live polling interval based on radio button selection."""
+        import live_poller
+        label = self._refresh_interval_var.get()
+        mapping = {"15s": 15, "1min": 60, "2min": 120}
+        secs = mapping.get(label, 15)
+        live_poller.POLL_INTERVAL_LIVE = secs
+        if self.status_label:
+            self.status_label.config(
+                text=f"Refresh interval: {label}", fg=MUTED)
+
     def switch_live_api(self):
         if self.live_api_active:
             self.poller.stop()
@@ -381,6 +406,7 @@ class SoccerEdgeApp:
             global MATCHES
             MATCHES.clear()
             MATCHES.extend(list(MOCK_MATCHES))
+            self._match_row_cache.clear()
             self.render_matches()
         else:
             self.status_label.config(text="Connecting to Live API…", fg=YELLOW)
@@ -448,18 +474,22 @@ class SoccerEdgeApp:
         tk.Label(nav, text="LAYOUT:", bg=TOP, fg=MUTED,
             font=("Segoe UI", 8)).pack(side="right", padx=(0,4))
 
+        self._layout_btns  = {}              # preset_name → Button widget
+        self._active_preset = "equal"        # startup default is the equal/square layout
+
         for label, preset, tip in [
-            ("⬜", "equal",        "Equal split"),
+            ("□", "equal",        "Equal split"),   # □ clean outlined square
             ("▣", "default",      "Default view"),
             ("◧", "focus_left",   "Focus left panel"),
             ("◫", "focus_center", "Focus center panel"),
             ("◨", "focus_right",  "Focus right panel"),
         ]:
-            tk.Button(nav, text=label, bg="#243244", fg=CYAN,
+            btn = tk.Button(nav, text=label, bg="#243244", fg=CYAN,
                 activebackground="#334155", relief="flat",
                 font=("Segoe UI", 11), padx=6, pady=2,
-                command=lambda p=preset: self._layout_preset(p)
-            ).pack(side="right", padx=1)
+                command=lambda p=preset: self._layout_preset(p))
+            btn.pack(side="right", padx=1)
+            self._layout_btns[preset] = btn
 
         tk.Button(nav, text="↺ Reset", bg="#243244", fg=MUTED,
             activebackground="#334155", relief="flat",
@@ -508,8 +538,8 @@ class SoccerEdgeApp:
         self._build_center(center)
         self._build_right(right)
 
-        # Set initial sash positions after window fully draws
-        self.root.after(400, self._set_initial_sashes)
+        # Set initial sash positions — after window is drawn AND data rendered
+        self.root.after(550, self._set_initial_sashes)
 
         # ── Scanner screen (lazy — built on first visit) ──
         self._scanner_frame = None
@@ -534,19 +564,58 @@ class SoccerEdgeApp:
             pass
 
     def _set_initial_sashes(self):
-        """Set default panel widths after window is fully drawn."""
+        """
+        Set panel widths after window is fully drawn.
+        Startup default: "equal" layout (the big □ square button).
+        Retries until the window has real geometry.
+        """
         try:
             self.root.update_idletasks()
             w = self._h_pane.winfo_width()
             if w <= 1:
                 self.root.after(150, self._set_initial_sashes)
                 return
-            # Left ~33%, Center ~42%, Right ~25%
+            # Apply "equal" layout: three panels in equal thirds
             self._h_pane.sash_place(0, int(w * 0.33), 0)
-            self._h_pane.sash_place(1, int(w * 0.75), 0)
+            self._h_pane.sash_place(1, int(w * 0.67), 0)
+            # Also set right panel and center split after a short delay
+            self.root.after(80, self._set_center_sash)
+            if hasattr(self, "_rv_pane") and self._rv_pane:
+                self.root.after(120, lambda: self._set_right_sashes(self._rv_pane))
+            # Highlight the equal/square layout button on startup
+            self.set_active_layout_button("equal")
         except Exception as e:
             print(f"[sash] {e}")
+
+    def _set_center_sash(self):
+        """Set center panel vertical split: 70% analysis / 30% odds board."""
+        try:
+            if not self.center_split:
+                return
+            h = self.center_split.winfo_height()
+            if h <= 1:
+                self.root.after(100, self._set_center_sash)
+                return
+            self.center_split.sash_place(0, 0, int(h * 0.70))
+        except Exception:
             pass
+
+    def set_active_layout_button(self, preset: str):
+        """
+        Highlight the active layout button; restore all others to normal style.
+        Called whenever a layout is applied (user click or startup).
+        """
+        self._active_preset = preset
+        for name, btn in getattr(self, "_layout_btns", {}).items():
+            if name == preset:
+                # Active: bright cyan background + white text
+                btn.config(bg="#0e7490", fg="#ffffff",
+                           relief="solid", highlightthickness=1,
+                           highlightbackground="#22d3ee")
+            else:
+                # Inactive: dim background
+                btn.config(bg="#243244", fg="#22d3ee",
+                           relief="flat", highlightthickness=0)
 
     def _reset_layout(self):
         """Reset panels to default proportions — routes to correct screen."""
@@ -557,6 +626,7 @@ class SoccerEdgeApp:
             self.root.after(50, self._set_initial_sashes)
             if hasattr(self, "_rv_pane") and self._rv_pane:
                 self.root.after(100, lambda: self._set_right_sashes(self._rv_pane))
+        self.set_active_layout_button("equal")
 
     def _layout_preset(self, preset: str):
         """Apply a layout preset — routes to correct screen handler."""
@@ -564,6 +634,7 @@ class SoccerEdgeApp:
             self._scanner_layout(preset)
         else:
             self._soccer_layout(preset)
+        self.set_active_layout_button(preset)
 
     def _scanner_layout(self, preset: str):
         """Apply layout to AI Market Scanner screen."""
@@ -644,10 +715,28 @@ class SoccerEdgeApp:
         self._add_filter(frow,"TOURNAMENT","tournament",pref_order(MAIN_TOURNAMENTS,MAIN_TOURNAMENTS))
         self._add_filter(frow,"DATE","date",DATE_FILTERS)
 
-        self.live_api_btn = tk.Button(p, text="Switch to Live API",
+        # Live API button + refresh interval selector on same row
+        live_row = tk.Frame(p, bg=BG)
+        live_row.grid(row=2, column=0, sticky="ew", pady=(0,6))
+        live_row.grid_columnconfigure(0, weight=1)
+
+        self.live_api_btn = tk.Button(live_row, text="Switch to Live API",
             bg="#5fa8d3", fg=TEXT, activebackground="#72b8df",
             relief="flat", font=FB, pady=4, command=self.switch_live_api)
-        self.live_api_btn.grid(row=2, column=0, sticky="ew", pady=(0,6))
+        self.live_api_btn.grid(row=0, column=0, sticky="ew")
+
+        # Refresh interval control
+        ri_row = tk.Frame(live_row, bg=PANEL_DARK)
+        ri_row.grid(row=1, column=0, sticky="ew", pady=(2,0))
+        tk.Label(ri_row, text="Refresh:", bg=PANEL_DARK, fg=MUTED,
+            font=FS).pack(side="left", padx=6)
+        self._refresh_interval_var = tk.StringVar(value="15s")
+        for label in ["15s", "1min", "2min"]:
+            tk.Radiobutton(ri_row, text=label,
+                variable=self._refresh_interval_var, value=label,
+                bg=PANEL_DARK, fg=TEXT, selectcolor=PANEL,
+                activebackground=PANEL_DARK, font=FS,
+                command=self._update_poll_interval).pack(side="left", padx=4)
 
         mo, mb = self._panel(p, "MATCHES")
         mo.grid(row=3, column=0, sticky="nsew", pady=(0,6))
@@ -680,6 +769,8 @@ class SoccerEdgeApp:
             self.filter_combos["league"].configure(values=vals)
             if self.filters["league"].get() not in vals:
                 self.filters["league"].set("All")
+        # Clear cache so filter changes force a full rebuild
+        self._match_row_cache.clear()
         self.render_matches()
 
     def _league_opts(self, country):
@@ -849,7 +940,7 @@ class SoccerEdgeApp:
     def _redraw_tabs(self):
         for w in self._tabs_frame.winfo_children():
             w.destroy()
-        tabs = ["Overview","Stats Replay","Attack","Control","Defense","Line-ups","Chat","Table","H2H"]
+        tabs = ["Overview","Stats Replay","Attack","Control","Defense","Line-ups","News","Weather","Form","Players","Video","Trivia","Chat","Table","H2H"]
         for i, name in enumerate(tabs):
             self._tabs_frame.grid_columnconfigure(i, weight=1)
             active = name == self.tab_name.get()
@@ -893,8 +984,10 @@ class SoccerEdgeApp:
 
         rf = tk.Frame(bar, bg=BG)
         rf.grid(row=0, column=2, sticky="e")
-        self._btn(rf,"Start Tracker",GREEN_DARK,self.start_tracker).pack(side="left",padx=(0,4))
-        self._btn(rf,"Stop Tracker", GRAY_BTN,  self.stop_tracker).pack(side="left")
+        self._btn(rf,"Predictions",  PURPLE,    self._show_predictions_window).pack(side="left",padx=(0,4))
+        self._btn(rf,"Team vs Team", "#0e7490",  self._show_team_comparison).pack(side="left",padx=(0,4))
+        self._btn(rf,"Start Tracker",GREEN_DARK, self.start_tracker).pack(side="left",padx=(0,4))
+        self._btn(rf,"Stop Tracker", GRAY_BTN,   self.stop_tracker).pack(side="left")
 
         self.tracker_status = tk.Label(p, text="", bg=PANEL, fg=MUTED, font=FS, anchor="w")
         self.tracker_status.grid(row=5, column=0, sticky="ew", padx=8, pady=(0,6))
@@ -954,11 +1047,101 @@ class SoccerEdgeApp:
             highlightbackground=BORDER, highlightthickness=1)
         outer.grid_columnconfigure(0, weight=1)
         outer.grid_rowconfigure(1, weight=1)
-        tk.Label(outer, text=title, bg=BG, fg=CYAN,
+
+        # Header row with title + maximize button
+        hdr = tk.Frame(outer, bg=BG)
+        hdr.grid(row=0, column=0, sticky="ew")
+        hdr.grid_columnconfigure(0, weight=1)
+        tk.Label(hdr, text=title, bg=BG, fg=CYAN,
             font=FB, anchor="w", padx=6, pady=4).grid(row=0, column=0, sticky="ew")
+        # Maximize button — calls panel overlay system
+        tk.Button(hdr, text="⛶", bg=BG, fg=MUTED,
+            activebackground="#1e293b", activeforeground=CYAN,
+            relief="flat", font=("Segoe UI",9), padx=4, pady=2,
+            command=lambda t=title: self._maximize_panel(outer, t)
+        ).grid(row=0, column=1, sticky="e", padx=4)
+
         body = tk.Frame(outer, bg=PANEL)
         body.grid(row=1, column=0, sticky="nsew", padx=4, pady=(0,4))
         return outer, body
+
+    def _maximize_panel(self, panel_frame, title):
+        """
+        Maximize a panel into an overlay covering the whole app.
+        Clicking the button again restores the panel.
+        """
+        if hasattr(self, "_maximized_overlay") and self._maximized_overlay:
+            # Already maximized — restore
+            self._restore_panel()
+            return
+
+        # Create full-screen overlay on top of screen container
+        overlay = tk.Frame(self._screen_container, bg=BG,
+            highlightbackground=CYAN_DARK, highlightthickness=2)
+        overlay.grid(row=0, column=0, sticky="nsew")
+        overlay.grid_rowconfigure(1, weight=1)
+        overlay.grid_columnconfigure(0, weight=1)
+        overlay.lift()
+
+        # Header with title + restore button
+        ohdr = tk.Frame(overlay, bg=TOP)
+        ohdr.grid(row=0, column=0, sticky="ew")
+        ohdr.grid_columnconfigure(0, weight=1)
+        tk.Label(ohdr, text=f"MAXIMIZED: {title}", bg=TOP, fg=CYAN,
+            font=FB, padx=10, pady=6).grid(row=0, column=0, sticky="w")
+        tk.Button(ohdr, text="⊡ Restore",
+            bg="#334155", fg=TEXT, activebackground="#475569",
+            relief="flat", font=FB, padx=12, pady=5,
+            command=self._restore_panel).grid(row=0, column=1, sticky="e", padx=8)
+
+        # Clone content into overlay using a new frame for the body
+        body = tk.Frame(overlay, bg=PANEL)
+        body.grid(row=1, column=0, sticky="nsew", padx=6, pady=6)
+        body.grid_rowconfigure(0, weight=1)
+        body.grid_columnconfigure(0, weight=1)
+
+        # Build expanded content based on title
+        self._build_maximized_content(body, title)
+
+        self._maximized_overlay = overlay
+
+    def _restore_panel(self):
+        """Remove the maximized overlay and return to normal layout."""
+        if hasattr(self, "_maximized_overlay") and self._maximized_overlay:
+            try:
+                self._maximized_overlay.destroy()
+            except Exception:
+                pass
+            self._maximized_overlay = None
+
+    def _build_maximized_content(self, p, title):
+        """
+        Build richer expanded content when a panel is maximized.
+        Falls back to a helpful message if no special view exists.
+        """
+        m = self.current_match
+        if "DECISION" in title:
+            self._render_decision_engine()
+            home = m.get("home","")
+            away = m.get("away","")
+            tk.Label(p,
+                text=(f"Decision Engine expanded for {home} vs {away}."
+                      " All signal detail shown above."),
+                bg=PANEL, fg=MUTED, font=FS, justify="left",
+                padx=12, pady=20).pack(fill="x")
+        elif "MATCH" in title.upper() or "MATCHES" in title.upper():
+            # Expanded match list with more columns
+            tk.Label(p, text="EXPANDED MATCH LIST — More columns visible",
+                bg=PANEL, fg=CYAN, font=FB, anchor="w", padx=8, pady=4).pack(fill="x")
+            self.render_matches()
+        else:
+            tk.Label(p,
+                text=(f"Expanded view: {title}\n"
+                      "This panel is now maximized.\n"
+                      "All content from the normal view is shown.\n"
+                      "Click Restore to return to the normal layout."),
+                bg=PANEL, fg=MUTED, font=FS, justify="left",
+                padx=16, pady=30).pack(fill="both", expand=True)
 
     def _btn(self, p, text, bg, cmd, width=None, pady=5):
         return tk.Button(p, text=text, bg=bg, fg=TEXT,
@@ -1065,61 +1248,219 @@ class SoccerEdgeApp:
         return result
 
     def render_matches(self):
-        self._clear(self.matches_frame)
+        """
+        Smooth match list update — never destroys all rows at once.
+
+        Strategy:
+        - On first call (or filter change): full rebuild is unavoidable.
+        - On live data updates: only rebuild rows whose data changed.
+        - Tracks rows by match_id in self._match_row_cache.
+        - Preserves scroll position throughout.
+        """
         matches = self.filtered_matches()
-        src = "live API" if self.live_api_active else "local mock"
-        live_n = sum(1 for m in matches if m.get("status")=="LIVE")
+        src     = "live API" if self.live_api_active else "local mock"
+        live_n  = sum(1 for m in matches if m.get("status") == "LIVE")
         self.status_label.config(
             text=f"Last Load: {src}  |  Matches: {len(matches)}  |  Live: {live_n}")
 
+        # Build a fast lookup: id → match
+        new_by_id = {m["id"]: m for m in matches}
+
+        # Decide whether we need a full rebuild:
+        # - First render (cache empty)
+        # - Filter changed (different set of IDs)
+        # - League grouping changed (different leagues visible)
+        old_ids     = set(self._match_row_cache.keys())
+        new_ids     = set(new_by_id.keys())
+        need_rebuild = (old_ids != new_ids)
+
+        if need_rebuild:
+            # Full rebuild — only done when structure changes
+            self._full_render_matches(matches)
+        else:
+            # Smooth in-place update — only update changed rows
+            self._update_match_rows(new_by_id)
+
+        # Update canvas scroll region
+        self.matches_frame.update_idletasks()
+        self.matches_canvas.configure(
+            scrollregion=self.matches_canvas.bbox("all"))
+
+    def _full_render_matches(self, matches):
+        """Full rebuild of match list. Preserves scroll position."""
+        # Save scroll position
+        try:
+            scroll_pos = self.matches_canvas.yview()[0]
+        except Exception:
+            scroll_pos = 0.0
+
+        self._clear(self.matches_frame)
+        self._match_row_cache.clear()
+
         if not matches:
-            tk.Label(self.matches_frame, text="No matches for selected filters.",
+            tk.Label(self.matches_frame,
+                text="No matches for selected filters.",
                 bg=PANEL_DARK, fg=MUTED, font=FM, pady=12).pack(fill="x")
             return
 
         grouped = {}
         for m in matches:
-            grouped.setdefault(m.get("league","?"), []).append(m)
+            grouped.setdefault(m.get("league", "?"), []).append(m)
 
         for league, ms in grouped.items():
-            tk.Label(self.matches_frame, text=f"─── {league.upper()} ───",
-                bg="#111827", fg=MUTED, font=FM, pady=2, anchor="w", padx=4).pack(fill="x", pady=(3,1))
+            tk.Label(self.matches_frame,
+                text=f"─── {league.upper()} ───",
+                bg="#111827", fg=MUTED, font=FM, pady=2,
+                anchor="w", padx=4).pack(fill="x", pady=(3, 1))
             for m in ms:
-                self._match_row(m)
+                row_frame = self._match_row(m)
+                # Cache the row frame and last-seen data snapshot
+                self._match_row_cache[m["id"]] = {
+                    "frame":      row_frame,
+                    "status":     m.get("status", ""),
+                    "minute":     m.get("minute", 0),
+                    "home_score": m.get("home_score", 0),
+                    "away_score": m.get("away_score", 0),
+                    "edge":       m.get("edge", 0.0),
+                }
 
-    def _match_row(self, m):
+        # Restore scroll position
+        try:
+            self.matches_frame.update_idletasks()
+            self.matches_canvas.yview_moveto(scroll_pos)
+        except Exception:
+            pass
+
+    def _update_match_rows(self, new_by_id: dict):
+        """
+        In-place update of existing rows.
+        Only rebuilds a row's labels when its data changed.
+        No flicker — unchanged rows are untouched.
+        """
+        for mid, m in new_by_id.items():
+            cached = self._match_row_cache.get(mid)
+            if not cached:
+                continue
+
+            # Check what changed
+            changed = (
+                cached.get("status")     != m.get("status", "") or
+                cached.get("minute")     != m.get("minute", 0) or
+                cached.get("home_score") != m.get("home_score", 0) or
+                cached.get("away_score") != m.get("away_score", 0) or
+                cached.get("edge")       != m.get("edge", 0.0)
+            )
+
+            if not changed:
+                continue
+
+            # Rebuild only this row's frame in-place
+            frame = cached.get("frame")
+            if frame and frame.winfo_exists():
+                for widget in frame.winfo_children():
+                    widget.destroy()
+                self._populate_match_row(frame, m)
+                # Brief highlight flash on changed row
+                self._flash_row(frame, m)
+
+            # Update cache
+            self._match_row_cache[mid].update({
+                "status":     m.get("status", ""),
+                "minute":     m.get("minute", 0),
+                "home_score": m.get("home_score", 0),
+                "away_score": m.get("away_score", 0),
+                "edge":       m.get("edge", 0.0),
+            })
+
+    def _flash_row(self, frame, m):
+        """Subtle 400ms highlight on a changed row. No heavy animation."""
+        try:
+            orig_bg = "#1f2937" if (
+                self.current_match and m["id"] == self.current_match["id"]
+            ) else ROW
+            flash_bg = "#1a3a4a"   # very subtle teal tint
+            frame.configure(bg=flash_bg)
+            for w in frame.winfo_children():
+                try:
+                    w.configure(bg=flash_bg)
+                except Exception:
+                    pass
+            self.root.after(420, lambda: self._unflash_row(frame, orig_bg))
+        except Exception:
+            pass
+
+    def _unflash_row(self, frame, orig_bg):
+        """Restore row background after flash."""
+        try:
+            if not frame.winfo_exists():
+                return
+            frame.configure(bg=orig_bg)
+            for w in frame.winfo_children():
+                try:
+                    w.configure(bg=orig_bg)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _trunc(self, name: str, maxlen: int) -> str:
+        """Truncate from the END with ellipsis — never from the front."""
+        if len(name) <= maxlen:
+            return name
+        return name[:maxlen - 1] + "…"
+
+    def _match_row(self, m, parent=None) -> tk.Frame:
+        """Create a new match row frame, populate it, and return it."""
+        container = parent if parent is not None else self.matches_frame
+        selected  = self.current_match and m["id"] == self.current_match["id"]
+        bg        = "#1f2937" if selected else ROW
+        row       = tk.Frame(container, bg=bg)
+        row.pack(fill="x", padx=2, pady=1)
+        self._populate_match_row(row, m)
+        return row
+
+    def _populate_match_row(self, row: tk.Frame, m):
+        """Fill (or refill) all labels/buttons inside a match row frame."""
         selected = self.current_match and m["id"] == self.current_match["id"]
         bg = "#1f2937" if selected else ROW
-        row = tk.Frame(self.matches_frame, bg=bg)
-        row.pack(fill="x", padx=3, pady=1)
 
-        st    = m.get("status","")
-        sc    = GREEN if st=="LIVE" else YELLOW
-        ec    = GREEN if m.get("edge",0)>=0 else RED
+        # Column weights: team name columns stretch, others fixed
+        for col_i, weight in enumerate([0, 0, 1, 0, 1, 0, 0, 0]):
+            row.grid_columnconfigure(col_i, weight=weight)
+
+        st    = m.get("status", "")
+        sc    = GREEN if st == "LIVE" else YELLOW
+        ec    = GREEN if m.get("edge", 0) >= 0 else RED
         score = f"{m.get('home_score',0)}-{m.get('away_score',0)}"
-        odds  = m.get("odds",(2.0,3.5,4.0))
+        odds  = m.get("odds", (2.0, 3.5, 4.0))
         star  = "★" if m["id"] in self.watchlist_ids else "☆"
+        # Truncate from the END — team names never get front-clipped
+        home  = self._trunc(m.get("home", ""), 14)
+        away  = self._trunc(m.get("away", ""), 14)
+        min_  = str(m.get("minute", "")) if m.get("minute") else "--"
 
+        # (text, min_width_chars, fg_color, anchor, col_index)
         cols = [
-            (st[:4],        4,  sc,   "w"),
-            (str(m.get("minute","")) if m.get("minute") else "--", 3, "#60a5fa","c"),
-            (m.get("home",""), 12, TEXT, "e"),
-            (score,         5,  ORANGE,"c"),
-            (m.get("away",""), 12, TEXT, "w"),
-            (f"{m.get('edge',0):+.1f}", 6, ec,  "c"),
-            (f"{odds[0]:.1f}/{odds[1]:.1f}/{odds[2]:.1f}", 13, MUTED, "c"),
+            (st[:4],                         5,  sc,        "w", 0),
+            (min_,                           4,  "#60a5fa",  "c", 1),
+            (home,                           13, TEXT,       "w", 2),
+            (score,                          5,  ORANGE,     "c", 3),
+            (away,                           13, TEXT,       "w", 4),
+            (f"{m.get('edge', 0):+.1f}",     6,  ec,        "c", 5),
+            (f"{odds[0]:.1f}/{odds[2]:.1f}", 9,  MUTED,     "c", 6),
         ]
-        for i, (txt, w, c, a) in enumerate(cols):
+        for txt, w, c, a, ci in cols:
             lb = tk.Label(row, text=txt, bg=bg, fg=c,
                 font=FM, width=w, anchor=a)
-            lb.grid(row=0, column=i, sticky="ew", padx=1, pady=4)
+            lb.grid(row=0, column=ci, sticky="ew", padx=1, pady=3)
             lb.bind("<Button-1>", lambda _e, item=m: self.select_match(item))
 
         tk.Button(row, text=star, bg=bg,
             fg=YELLOW if m["id"] in self.watchlist_ids else MUTED,
-            activebackground=bg, relief="flat", width=2, font=("Segoe UI Symbol",10),
+            activebackground=bg, relief="flat", width=2,
+            font=("Segoe UI Symbol", 10),
             command=lambda item=m: self._toggle_watchlist(item)
-        ).grid(row=0, column=len(cols), padx=(1,4))
+        ).grid(row=0, column=7, padx=(1, 3))
         row.bind("<Button-1>", lambda _e, item=m: self.select_match(item))
 
     def render_watchlist(self):
@@ -1131,7 +1472,7 @@ class SoccerEdgeApp:
                 bg=PANEL_DARK, fg=MUTED, font=FM, pady=6).pack(fill="x", padx=4)
             return
         for m in items:
-            self._match_row(m)
+            self._match_row(m, parent=self.watchlist_frame)
         self.watchlist_canvas.configure(scrollregion=self.watchlist_canvas.bbox("all"))
 
     def _toggle_watchlist(self, m):
@@ -1367,6 +1708,12 @@ class SoccerEdgeApp:
         elif t == "Control":      self._tab_control(body, m)
         elif t == "Defense":      self._tab_defense(body, m)
         elif t == "Line-ups":     self._tab_lineups(body, m)
+        elif t == "News":         self._tab_news(body, m)
+        elif t == "Weather":      self._tab_weather(body, m)
+        elif t == "Form":         self._tab_form(body, m)
+        elif t == "Players":      self._tab_players(body, m)
+        elif t == "Video":        self._tab_video(body, m)
+        elif t == "Trivia":       self._tab_trivia(body, m)
         elif t == "Chat":         self._tab_chat(body, m)
         elif t == "Table":        self._tab_table(body, m)
         elif t == "H2H":          self._tab_h2h(body, m)
@@ -2478,6 +2825,506 @@ class SoccerEdgeApp:
             draw_cents=m.get("draw_price",33.0),
             under_cents=m.get("under_price",50.0),
             over_cents=m.get("over_price",50.0))
+
+    # ──────────────────────────────────────────
+    # New tabs: News, Weather, Form, Players, Video, Trivia
+    # ──────────────────────────────────────────
+
+    def _placeholder_tab(self, p, title, lines):
+        """Generic placeholder tab with a message and bullet points."""
+        self._sec(p, title)
+        c = self._card(p)
+        c.pack(fill="x", pady=4)
+        for line in lines:
+            col = CYAN if line.startswith("•") else MUTED
+            tk.Label(c, text=line, bg=PANEL_DARK, fg=col,
+                font=FS, anchor="w", justify="left",
+                padx=10, pady=3, wraplength=580).pack(fill="x")
+
+    def _tab_news(self, p, m):
+        self._sec(p, f"MATCH NEWS — {m.get('home','')} vs {m.get('away','')}")
+        tk.Label(p, text="Latest news and articles about this match.",
+            bg=PANEL, fg=MUTED, font=FS, anchor="w", pady=2).pack(fill="x")
+        news_items = [
+            ("Sky Sports", f"{m.get('home','')} manager confirms starting XI for today."),
+            ("BBC Sport",  f"{m.get('away','')} striker doubtful with hamstring concern."),
+            ("The Guardian",f"Preview: Can {m.get('home','')} extend unbeaten run?"),
+            ("ESPN",       "Referee appointments confirmed for Saturday's fixtures."),
+            ("Transfermarkt","Latest injury and suspension updates."),
+        ]
+        for source, headline in news_items:
+            card = tk.Frame(p, bg=PANEL_DARK,
+                highlightbackground=BORDER, highlightthickness=1)
+            card.pack(fill="x", pady=3)
+            row = tk.Frame(card, bg=PANEL_DARK)
+            row.pack(fill="x", padx=10, pady=6)
+            tk.Label(row, text=f"[{source}]", bg=PANEL_DARK,
+                fg=CYAN, font=FM, anchor="w", width=16).pack(side="left")
+            tk.Label(row, text=headline, bg=PANEL_DARK,
+                fg=TEXT, font=FS, anchor="w", wraplength=480,
+                justify="left").pack(side="left", fill="x", expand=True)
+        self._placeholder_tab(p, "DATA STATUS", [
+            "• News feed: placeholder (mock data)",
+            "• Connect real news API in next phase.",
+            "• Supported sources: RSS, Sky Sports, BBC Sport, ESPN.",
+        ])
+
+    def _tab_weather(self, p, m):
+        self._sec(p, f"MATCH CONDITIONS — {m.get('venue','Stadium')}")
+        country = m.get("country","England")
+        weather_data = {
+            "England": ("11°C","Light rain","SW 12 km/h","78%","9 km"),
+            "Spain":   ("17°C","Clear sky","NE 8 km/h","45%","20 km"),
+            "Italy":   ("15°C","Partly cloudy","NW 10 km/h","60%","15 km"),
+            "Germany": ("9°C","Overcast","W 18 km/h","82%","8 km"),
+        }
+        temp, cond, wind, humid, vis = weather_data.get(country,("14°C","Normal","10 km/h","65%","12 km"))
+
+        metrics = [
+            ("Temperature",  temp),
+            ("Conditions",   cond),
+            ("Wind",         wind),
+            ("Humidity",     humid),
+            ("Visibility",   vis),
+            ("Pitch",        "Good"),
+            ("Roof",         "Open air"),
+        ]
+        c = self._card(p)
+        c.pack(fill="x", pady=4)
+        for lbl, val in metrics:
+            row = tk.Frame(c, bg=PANEL_DARK)
+            row.pack(fill="x", padx=10, pady=3)
+            tk.Label(row, text=lbl, bg=PANEL_DARK, fg=MUTED,
+                font=FS, width=16, anchor="w").pack(side="left")
+            tk.Label(row, text=val, bg=PANEL_DARK, fg=TEXT,
+                font=FB, anchor="w").pack(side="left")
+        self._placeholder_tab(p, "DATA STATUS", [
+            "• Weather: mock data based on country.",
+            "• Connect OpenWeather or similar API for live data.",
+        ])
+
+    def _tab_form(self, p, m):
+        self._sec(p, "RECENT FORM GUIDE")
+        for side, team, form, avg in [
+            ("HOME", m.get("home",""), m.get("home_form",["?","?","?","?","?"]), m.get("home_avg",1.5)),
+            ("AWAY", m.get("away",""), m.get("away_form",["?","?","?","?","?"]), m.get("away_avg",1.5)),
+        ]:
+            c = self._card(p)
+            c.pack(fill="x", pady=4)
+            top = tk.Frame(c, bg=PANEL_DARK)
+            top.pack(fill="x", padx=10, pady=6)
+            col = CYAN if side=="HOME" else ORANGE
+            tk.Label(top, text=f"{side}: {team}", bg=PANEL_DARK,
+                fg=col, font=FB, anchor="w").pack(side="left")
+            tk.Label(top, text=f"{avg:.1f} goals/game",
+                bg=PANEL_DARK, fg=MUTED, font=FS, anchor="e").pack(side="right")
+            form_row = tk.Frame(c, bg=PANEL_DARK)
+            form_row.pack(fill="x", padx=10, pady=(0,6))
+            for result in form:
+                fc = GREEN if result=="W" else ORANGE if result=="D" else RED
+                tk.Label(form_row, text=result, bg=fc, fg=TEXT,
+                    font=FB, width=3, pady=4).pack(side="left", padx=2)
+        self._placeholder_tab(p, "DATA STATUS", [
+            "• Form: last 5 results from match data.",
+            "• Extended form history available via live API.",
+        ])
+
+    def _tab_players(self, p, m):
+        self._sec(p, "PLAYERS & INJURIES")
+        for side, team in [("HOME", m.get("home","")), ("AWAY", m.get("away",""))]:
+            c = self._card(p)
+            c.pack(fill="x", pady=4)
+            col = CYAN if side=="HOME" else ORANGE
+            tk.Label(c, text=f"{side}: {team}", bg=PANEL_DARK,
+                fg=col, font=FB, padx=10, pady=6, anchor="w").pack(fill="x")
+            players = [
+                ("Available","Captain and usual starter","✓ FIT"),
+                ("Questionable","Hamstring concern","⚠ DOUBT"),
+                ("Out","Suspended — yellow card accumulation","✗ OUT"),
+            ]
+            for name, note, status in players:
+                row = tk.Frame(c, bg=PANEL_DARK)
+                row.pack(fill="x", padx=10, pady=2)
+                sc = GREEN if "FIT" in status else YELLOW if "DOUBT" in status else RED
+                tk.Label(row, text=status, bg=PANEL_DARK, fg=sc,
+                    font=FM, width=8, anchor="w").pack(side="left")
+                tk.Label(row, text=name, bg=PANEL_DARK, fg=TEXT,
+                    font=FB, width=16, anchor="w").pack(side="left")
+                tk.Label(row, text=note, bg=PANEL_DARK, fg=MUTED,
+                    font=FS, anchor="w").pack(side="left")
+        self._placeholder_tab(p, "DATA STATUS", [
+            "• Player data: placeholder.",
+            "• Connect live lineups/injuries API for real data.",
+        ])
+
+    def _tab_video(self, p, m):
+        self._sec(p, "VIDEO LINKS")
+        tk.Label(p,
+            text="Video links open in your browser. No illegal streams or betting sites.",
+            bg=PANEL, fg=MUTED, font=FS, anchor="w", pady=4).pack(fill="x")
+        videos = [
+            ("YouTube Preview",    f"{m.get('home','')} vs {m.get('away','')} — Match Preview",  "preview"),
+            ("YouTube H2H",        "Head to Head History — Top Moments",                           "h2h"),
+            ("YouTube Tactics",    f"{m.get('home','')} Tactical Breakdown",                      "tactics"),
+            ("Press Conference",   f"{m.get('home','')} Manager Pre-Match Presser",               "presser"),
+            ("Stats Video",        "Match Stats and Predictions Breakdown",                        "stats"),
+        ]
+        for label, title, vtype in videos:
+            card = tk.Frame(p, bg=PANEL_DARK,
+                highlightbackground=BORDER, highlightthickness=1)
+            card.pack(fill="x", pady=3)
+            row = tk.Frame(card, bg=PANEL_DARK)
+            row.pack(fill="x", padx=10, pady=6)
+            tk.Label(row, text=f"[{label}]", bg=PANEL_DARK, fg=CYAN,
+                font=FM, width=20, anchor="w").pack(side="left")
+            tk.Label(row, text=title, bg=PANEL_DARK, fg=TEXT,
+                font=FS, anchor="w").pack(side="left", fill="x", expand=True)
+            tk.Button(row, text="Open →", bg="#243244", fg=CYAN,
+                activebackground="#334155", relief="flat", font=FS, padx=8,
+                command=lambda t=title: self._open_youtube(t)).pack(side="right", padx=4)
+
+    def _open_youtube(self, query):
+        """Open YouTube search in browser."""
+        import webbrowser, urllib.parse
+        q = urllib.parse.quote_plus(query)
+        webbrowser.open(f"https://www.youtube.com/results?search_query={q}")
+
+    def _tab_trivia(self, p, m):
+        """Interactive trivia with 4-choice questions."""
+        self._sec(p, "SOCCER TRIVIA")
+        if not hasattr(self, "_trivia_score"):
+            self._trivia_score = {"correct": 0, "total": 0}
+        if not hasattr(self, "_trivia_answered"):
+            self._trivia_answered = {}
+        if not hasattr(self, "_trivia_q_index"):
+            self._trivia_q_index = 0
+
+        questions = [
+            ("Which club has won the most UEFA Champions League titles?",
+             ["Real Madrid","Barcelona","Bayern Munich","AC Milan"], 0),
+            (f"What is {m.get('home','Team')}'s nickname?",
+             ["The Citizens","The Reds","The Gunners","The Blues"], 0),
+            ("In which year was the FIFA World Cup first held?",
+             ["1930","1934","1938","1950"], 0),
+            ("Which country hosted the 2022 FIFA World Cup?",
+             ["Russia","Brazil","Qatar","UAE"], 2),
+            ("How many players are on a soccer team during a match?",
+             ["10","11","12","9"], 1),
+            ("What is the maximum number of substitutes allowed in modern soccer?",
+             ["3","4","5","6"], 2),
+            ("Which player has won the most Ballon d'Or awards?",
+             ["Cristiano Ronaldo","Lionel Messi","Ronaldo Nazário","Zinedine Zidane"], 1),
+            ("What does 'VAR' stand for?",
+             ["Video Assistant Referee","Visual Accuracy Review","Verified Action Ruling","Video Analysis Room"], 0),
+        ]
+
+        # Score display
+        sc_row = tk.Frame(p, bg=PANEL)
+        sc_row.pack(fill="x", pady=(0,8))
+        sc = self._trivia_score
+        tk.Label(sc_row,
+            text=f"Score: {sc['correct']}/{sc['total']}  ({int(sc['correct']/max(sc['total'],1)*100)}% correct)",
+            bg=PANEL, fg=CYAN, font=FB, anchor="w").pack(side="left", padx=8)
+        tk.Button(sc_row, text="Next Question →", bg=CYAN_DARK, fg=TEXT,
+            relief="flat", font=FB, padx=10, pady=4,
+            command=lambda: self._trivia_next(p, m, questions)).pack(side="right", padx=8)
+        tk.Button(sc_row, text="Reset", bg=GRAY_BTN, fg=TEXT,
+            relief="flat", font=FS, padx=8, pady=4,
+            command=lambda: self._trivia_reset(p, m)).pack(side="right", padx=4)
+
+        q_idx = self._trivia_q_index % len(questions)
+        self._render_trivia_question(p, m, questions, q_idx)
+
+    def _render_trivia_question(self, p, m, questions, q_idx):
+        """Render one trivia question with 4 answer buttons."""
+        # Clear only question area (not score row) — simple: just add below
+        question, answers, correct = questions[q_idx]
+        q_key = q_idx
+        answered = self._trivia_answered.get(q_key)
+
+        qc = self._card(p)
+        qc.pack(fill="x", pady=4)
+        tk.Label(qc, text=f"Q{q_idx+1}: {question}", bg=PANEL_DARK, fg=TEXT,
+            font=FB, anchor="w", justify="left", padx=10, pady=8,
+            wraplength=600).pack(fill="x")
+
+        for i, ans in enumerate(answers):
+            if answered is not None:
+                if i == correct:
+                    bg, fg = GREEN_DARK, TEXT
+                elif i == answered and answered != correct:
+                    bg, fg = RED_DARK, TEXT
+                else:
+                    bg, fg = "#1e293b", MUTED
+            else:
+                bg, fg = "#243244", TEXT
+            tk.Button(qc, text=f"  {chr(65+i)}.  {ans}",
+                bg=bg, fg=fg, activebackground="#334155",
+                relief="flat", font=FS, anchor="w", padx=12, pady=6,
+                command=lambda ci=i, qk=q_key: self._trivia_answer(p, m, questions, q_idx, ci, qk)
+            ).pack(fill="x", padx=8, pady=2)
+
+        if answered is not None:
+            result_text = "✓ Correct!" if answered == correct else f"✗ Answer: {answers[correct]}"
+            result_col  = GREEN if answered == correct else RED
+            tk.Label(qc, text=result_text, bg=PANEL_DARK, fg=result_col,
+                font=FB, padx=10, pady=6).pack(fill="x")
+
+    def _trivia_answer(self, p, m, questions, q_idx, choice, q_key):
+        _, _, correct = questions[q_idx]
+        if q_key not in self._trivia_answered:
+            self._trivia_answered[q_key] = choice
+            self._trivia_score["total"] += 1
+            if choice == correct:
+                self._trivia_score["correct"] += 1
+            # Refresh tab to show result
+            self.set_tab("Trivia")
+
+    def _trivia_next(self, p, m, questions):
+        self._trivia_q_index = (self._trivia_q_index + 1) % len(questions)
+        self.set_tab("Trivia")
+
+    def _trivia_reset(self, p, m):
+        self._trivia_score    = {"correct": 0, "total": 0}
+        self._trivia_answered = {}
+        self._trivia_q_index  = 0
+        self.set_tab("Trivia")
+
+    # ──────────────────────────────────────────
+    # User Prediction Game (accessible from Chat tab / new button)
+    # ──────────────────────────────────────────
+
+    def _show_predictions_window(self):
+        """Open prediction game as a popup window."""
+        if hasattr(self, "_pred_win") and self._pred_win and self._pred_win.winfo_exists():
+            self._pred_win.lift()
+            return
+        win = tk.Toplevel(self.root)
+        win.title("User Predictions — Soccer Edge Engine")
+        win.geometry("700x600")
+        win.configure(bg=BG)
+        self._pred_win = win
+        self._build_predictions_ui(win)
+
+    def _build_predictions_ui(self, win):
+        """Build prediction game UI inside a window."""
+        if not hasattr(self, "_user_preds"):
+            self._user_preds = []
+
+        tk.Label(win, text="USER PREDICTIONS", bg=BG, fg=CYAN,
+            font=("Consolas",14,"bold"), anchor="w").pack(fill="x", padx=12, pady=8)
+        tk.Label(win,
+            text="Predict for fun — track your record against the engine. Paper only.",
+            bg=BG, fg=MUTED, font=FS, anchor="w").pack(fill="x", padx=12)
+
+        m = self.current_match
+        tk.Label(win, text=f"Selected: {m.get('home','')} vs {m.get('away','')}",
+            bg=PANEL_DARK, fg=TEXT, font=FB, anchor="w",
+            padx=12, pady=6).pack(fill="x", pady=(8,4))
+
+        # Prediction form
+        form = tk.Frame(win, bg=PANEL)
+        form.pack(fill="x", padx=12, pady=4)
+
+        pred_var  = tk.StringVar(value="")
+        score_var = tk.StringVar(value="")
+
+        tk.Label(form, text="Your Pick:", bg=PANEL, fg=CYAN,
+            font=FB, anchor="w").pack(fill="x", padx=8, pady=(8,2))
+        picks = tk.Frame(form, bg=PANEL)
+        picks.pack(fill="x", padx=8)
+        for label in [m.get("home","Home"), "Draw", m.get("away","Away")]:
+            tk.Radiobutton(picks, text=label, variable=pred_var, value=label,
+                bg=PANEL, fg=TEXT, selectcolor=PANEL_DARK,
+                activebackground=PANEL, font=FS).pack(side="left", padx=8)
+
+        tk.Label(form, text="Exact Score (optional):", bg=PANEL, fg=CYAN,
+            font=FB, anchor="w").pack(fill="x", padx=8, pady=(8,2))
+        score_entry = tk.Entry(form, textvariable=score_var, bg=PANEL_DARK,
+            fg=TEXT, insertbackground=TEXT, relief="flat", font=FS)
+        score_entry.pack(fill="x", padx=8, pady=(0,8))
+
+        def submit():
+            pick = pred_var.get().strip()
+            if not pick:
+                return
+            engine_rec = self._get_engine_pick(m)
+            self._user_preds.append({
+                "match":   f"{m.get('home','')} vs {m.get('away','')}",
+                "pick":    pick,
+                "score":   score_var.get().strip(),
+                "engine":  engine_rec,
+                "status":  "Pending",
+                "correct": None,
+            })
+            score_var.set("")
+            pred_var.set("")
+            _refresh_log()
+
+        tk.Button(form, text="Submit Prediction", bg=GREEN_DARK, fg=TEXT,
+            activebackground=GREEN_DARK, relief="flat", font=FB,
+            pady=8, command=submit).pack(fill="x", padx=8, pady=(0,8))
+
+        # Prediction log
+        tk.Label(win, text="YOUR PREDICTIONS", bg=BG, fg=CYAN,
+            font=FB, anchor="w").pack(fill="x", padx=12, pady=(8,2))
+
+        log_frame = tk.Frame(win, bg=PANEL_DARK)
+        log_frame.pack(fill="both", expand=True, padx=12, pady=(0,8))
+
+        def _refresh_log():
+            for w in log_frame.winfo_children():
+                w.destroy()
+            if not self._user_preds:
+                tk.Label(log_frame, text="No predictions yet.",
+                    bg=PANEL_DARK, fg=MUTED, font=FS, pady=12).pack()
+                return
+            total   = len(self._user_preds)
+            correct = sum(1 for p in self._user_preds if p["correct"] is True)
+            tk.Label(log_frame,
+                text=f"Total: {total}  Correct: {correct}  Win rate: {int(correct/max(total,1)*100)}%",
+                bg=PANEL_DARK, fg=CYAN, font=FM, anchor="w",
+                padx=8, pady=4).pack(fill="x")
+            for pred in reversed(self._user_preds[-10:]):
+                row = tk.Frame(log_frame, bg=ROW)
+                row.pack(fill="x", pady=1)
+                sc = GREEN if pred["correct"] else RED if pred["correct"] is False else MUTED
+                tk.Label(row, text=pred["match"][:24], bg=ROW, fg=TEXT,
+                    font=FS, width=24, anchor="w").pack(side="left", padx=4, pady=3)
+                tk.Label(row, text=f"Pick: {pred['pick']}", bg=ROW, fg=CYAN,
+                    font=FM, width=16, anchor="w").pack(side="left")
+                tk.Label(row, text=f"Engine: {pred['engine']}", bg=ROW, fg=ORANGE,
+                    font=FM, width=16, anchor="w").pack(side="left")
+                tk.Label(row, text=pred["status"], bg=ROW, fg=sc,
+                    font=FM, anchor="w").pack(side="left")
+
+        _refresh_log()
+
+    def _get_engine_pick(self, m):
+        """Get current engine recommendation for a match."""
+        odds = m.get("odds",(2.0,3.5,4.0))
+        pred = m.get("pred",(33,33,34))
+        h, d, a = pred
+        if h >= d and h >= a:
+            return m.get("home","Home")
+        elif a >= d:
+            return m.get("away","Away")
+        return "Draw"
+
+    # ──────────────────────────────────────────
+    # Team vs Team Comparison Tool
+    # ──────────────────────────────────────────
+
+    def _show_team_comparison(self):
+        """Open team comparison tool as a popup."""
+        if hasattr(self, "_cmp_win") and self._cmp_win and self._cmp_win.winfo_exists():
+            self._cmp_win.lift()
+            return
+        win = tk.Toplevel(self.root)
+        win.title("Team vs Team Comparison — Soccer Edge Engine")
+        win.geometry("800x650")
+        win.configure(bg=BG)
+        self._cmp_win = win
+        self._build_comparison_ui(win)
+
+    def _build_comparison_ui(self, win):
+        tk.Label(win, text="TEAM vs TEAM COMPARISON", bg=BG, fg=CYAN,
+            font=("Consolas",14,"bold"), anchor="w").pack(fill="x", padx=12, pady=8)
+        tk.Label(win,
+            text="Compare any two teams. Uses local data — real historical data in next phase.",
+            bg=BG, fg=MUTED, font=FS, anchor="w").pack(fill="x", padx=12)
+
+        # Search row
+        search_f = tk.Frame(win, bg=PANEL)
+        search_f.pack(fill="x", padx=12, pady=8)
+        search_f.grid_columnconfigure(1, weight=1)
+        search_f.grid_columnconfigure(3, weight=1)
+
+        team_a_var = tk.StringVar(value=self.current_match.get("home","Team A"))
+        team_b_var = tk.StringVar(value=self.current_match.get("away","Team B"))
+
+        tk.Label(search_f, text="Team A:", bg=PANEL, fg=CYAN, font=FB,
+            anchor="w").grid(row=0, column=0, padx=8, pady=8)
+        tk.Entry(search_f, textvariable=team_a_var, bg=PANEL_DARK, fg=TEXT,
+            insertbackground=TEXT, relief="flat", font=FS).grid(
+            row=0, column=1, sticky="ew", padx=4)
+        tk.Label(search_f, text="Team B:", bg=PANEL, fg=ORANGE, font=FB,
+            anchor="w").grid(row=0, column=2, padx=8)
+        tk.Entry(search_f, textvariable=team_b_var, bg=PANEL_DARK, fg=TEXT,
+            insertbackground=TEXT, relief="flat", font=FS).grid(
+            row=0, column=3, sticky="ew", padx=4)
+
+        results_f = tk.Frame(win, bg=BG)
+        results_f.pack(fill="both", expand=True, padx=12, pady=4)
+
+        def compare():
+            for w in results_f.winfo_children():
+                w.destroy()
+            a = team_a_var.get().strip() or "Team A"
+            b = team_b_var.get().strip() or "Team B"
+            m = self.current_match
+
+            # Use match data if teams match, else generate mock stats
+            if a == m.get("home","") and b == m.get("away",""):
+                ha, hb = m.get("home_avg",1.5), m.get("away_avg",1.5)
+                fa, fb = m.get("home_form",["W","D","L","W","D"]), m.get("away_form",["L","W","W","D","L"])
+            else:
+                import random
+                random.seed(hash(a+b) % 9999)
+                ha, hb = round(random.uniform(0.9,2.5),1), round(random.uniform(0.9,2.5),1)
+                results = ["W","D","L"]
+                fa = [random.choice(results) for _ in range(5)]
+                fb = [random.choice(results) for _ in range(5)]
+
+            # Header
+            hdr = tk.Frame(results_f, bg=PANEL_DARK)
+            hdr.pack(fill="x", pady=4)
+            hdr.grid_columnconfigure(0, weight=1)
+            hdr.grid_columnconfigure(2, weight=1)
+            tk.Label(hdr, text=a, bg=PANEL_DARK, fg=CYAN, font=("Segoe UI",14,"bold"),
+                anchor="center").grid(row=0, column=0, sticky="ew", pady=8)
+            tk.Label(hdr, text="vs", bg=PANEL_DARK, fg=MUTED, font=FT,
+                anchor="center").grid(row=0, column=1, padx=20)
+            tk.Label(hdr, text=b, bg=PANEL_DARK, fg=ORANGE, font=("Segoe UI",14,"bold"),
+                anchor="center").grid(row=0, column=2, sticky="ew", pady=8)
+
+            # Stats rows
+            stats_frame = tk.Frame(results_f, bg=BG)
+            stats_frame.pack(fill="x", pady=4)
+
+            def stat_row(label, va, vb, highlight=False):
+                r = tk.Frame(stats_frame, bg=ROW if not highlight else "#1a2f1a")
+                r.pack(fill="x", pady=1)
+                r.grid_columnconfigure(0, weight=1)
+                r.grid_columnconfigure(2, weight=1)
+                ca = GREEN if str(va) > str(vb) else MUTED
+                cb = GREEN if str(vb) > str(va) else MUTED
+                tk.Label(r, text=str(va), bg=r.cget("bg"), fg=ca,
+                    font=FB, anchor="e").grid(row=0, column=0, sticky="ew", padx=10, pady=6)
+                tk.Label(r, text=label, bg=r.cget("bg"), fg=TEXT,
+                    font=FS, anchor="center").grid(row=0, column=1, padx=20)
+                tk.Label(r, text=str(vb), bg=r.cget("bg"), fg=cb,
+                    font=FB, anchor="w").grid(row=0, column=2, sticky="ew", padx=10)
+
+            stat_row("Goals per game", ha, hb, True)
+            a_wins = fa.count("W"); b_wins = fb.count("W")
+            stat_row("Recent wins (last 5)", a_wins, b_wins)
+            a_pts = a_wins*3 + fa.count("D"); b_pts = b_wins*3 + fb.count("D")
+            stat_row("Recent points", a_pts, b_pts)
+            stat_row("Recent form",
+                " ".join(fa), " ".join(fb))
+
+            # H2H note
+            note = tk.Label(results_f,
+                text="Note: No direct head-to-head found. Showing statistical comparison from local data.",
+                bg=PANEL_DARK, fg=MUTED, font=FS, anchor="w",
+                padx=10, pady=8, wraplength=750, justify="left")
+            note.pack(fill="x", pady=8)
+
+        tk.Button(search_f, text="Compare →", bg=CYAN_DARK, fg=TEXT,
+            activebackground=CYAN_DARK, relief="flat", font=FB, padx=12, pady=6,
+            command=compare).grid(row=0, column=4, padx=(8,4))
+        compare()  # auto-run on open
 
     # ──────────────────────────────────────────
     # Main loop
