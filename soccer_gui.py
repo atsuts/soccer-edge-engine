@@ -539,7 +539,9 @@ class SoccerEdgeApp:
         self._build_right(right)
 
         # Set initial sash positions — after window is drawn AND data rendered
-        self.root.after(550, self._set_initial_sashes)
+        self.root.after(550,  self._set_initial_sashes)
+        self.root.after(1200, self._set_initial_sashes)  # retry for slow Windows draws
+        self.root.after(1800, self._set_initial_sashes)  # final retry for very slow draws
 
         # ── Scanner screen (lazy — built on first visit) ──
         self._scanner_frame = None
@@ -565,9 +567,10 @@ class SoccerEdgeApp:
 
     def _set_initial_sashes(self):
         """
-        Set panel widths after window is fully drawn.
-        Startup default: "equal" layout (the big □ square button).
-        Retries until the window has real geometry.
+        Apply balanced startup layout: equal thirds (33% / 34% / 33%).
+        This is identical to clicking the □ equal layout button.
+        Called at 550ms, 1200ms, and 1800ms — three attempts ensure
+        the layout sticks even on slow Windows window draws.
         """
         try:
             self.root.update_idletasks()
@@ -575,14 +578,15 @@ class SoccerEdgeApp:
             if w <= 1:
                 self.root.after(150, self._set_initial_sashes)
                 return
-            # Apply "equal" layout: three panels in equal thirds
+            # Step 1: Set horizontal panel sashes (left/center/right)
             self._h_pane.sash_place(0, int(w * 0.33), 0)
             self._h_pane.sash_place(1, int(w * 0.67), 0)
-            # Also set right panel and center split after a short delay
-            self.root.after(80, self._set_center_sash)
+            # Step 2: Set center vertical split (analysis / odds board)
+            self.root.after(60, self._set_center_sash)
+            # Step 3: Set right panel vertical sections
             if hasattr(self, "_rv_pane") and self._rv_pane:
-                self.root.after(120, lambda: self._set_right_sashes(self._rv_pane))
-            # Highlight the equal/square layout button on startup
+                self.root.after(80, lambda: self._set_right_sashes(self._rv_pane))
+            # Step 4: Highlight the equal/square layout button
             self.set_active_layout_button("equal")
         except Exception as e:
             print(f"[sash] {e}")
@@ -659,11 +663,12 @@ class SoccerEdgeApp:
                 self._h_pane.sash_place(1, int(w * 0.52), 0)
             elif preset == "equal":
                 self._h_pane.sash_place(0, int(w * 0.33), 0)
-                self._h_pane.sash_place(1, int(w * 0.66), 0)
+                self._h_pane.sash_place(1, int(w * 0.67), 0)
+                self.root.after(60, self._set_center_sash)
             elif preset == "default":
                 self.root.after(50, self._set_initial_sashes)
             if hasattr(self, "_rv_pane") and self._rv_pane:
-                self.root.after(60, lambda: self._set_right_sashes(self._rv_pane))
+                self.root.after(80, lambda: self._set_right_sashes(self._rv_pane))
         except Exception as e:
             print(f"[soccer layout] {e}")
 

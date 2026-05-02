@@ -694,8 +694,25 @@ class AIMarketScannerFrame(tk.Frame):
             f3 = _section("3  CRYPTO REFERENCE")
             _row(f3, "Market type", "Non-crypto — no reference data")
 
-        # ── 4. Fee / Breakeven ────────────────────────────────────────
-        f4 = _section("4  FEE / BREAKEVEN")
+        # ── 4. Orderbook ─────────────────────────────────────────────
+        f4ob = _section("4  ORDERBOOK")
+        try:
+            ob = self.data_layer.get_orderbook(sig.market_id,
+                source=self.data_layer._last_source)
+            if ob:
+                _row(f4ob, "YES bid/ask",
+                    f"{format_price(ob.yes_best_bid)} / {format_price(ob.yes_best_ask)}")
+                _row(f4ob, "NO  bid/ask",
+                    f"{format_price(ob.no_best_bid)} / {format_price(ob.no_best_ask)}")
+                _row(f4ob, "Depth",    str(ob.total_yes_qty + ob.total_no_qty))
+                _row(f4ob, "Liquidity", ob.liquidity)
+            else:
+                _row(f4ob, "Status", "Click 'Load Orderbook' to fetch", YELLOW)
+        except Exception:
+            _row(f4ob, "Status", "N/A", MUTED)
+
+        # ── 5. Fee / Breakeven ────────────────────────────────────────
+        f4 = _section("5  FEE / BREAKEVEN")
         ask = sig.ask_price or 0
         if ask > 0:
             from paper_trade_engine import contracts_for_budget, kalshi_fee, breakeven_price
@@ -711,8 +728,8 @@ class AIMarketScannerFrame(tk.Frame):
         else:
             _row(f4, "Status", "Load Orderbook to see prices", YELLOW)
 
-        # ── 5. Signal / Trade Plan ────────────────────────────────────
-        f5 = _section("5  SIGNAL")
+        # ── 6. Signal / Trade Plan ────────────────────────────────────
+        f5 = _section("6  SIGNAL")
         _row(f5, "Signal",  sig.signal, sc["fg"])
         if sig.raw_edge and sig.ask_price:
             _row(f5, "Raw edge",   f"{sig.raw_edge:+.1f}c",
@@ -733,13 +750,18 @@ class AIMarketScannerFrame(tk.Frame):
                 bg="#1a1a2e", fg=YELLOW, font=FS, padx=8, pady=4,
                 justify="left", wraplength=240).pack(fill="x", padx=4, pady=4)
 
-        # ── 6. Action buttons ─────────────────────────────────────────
+        # ── 7. Action buttons ─────────────────────────────────────────
         bf = tk.Frame(inner, bg=PANEL)
         bf.pack(fill="x", padx=4, pady=4)
+        in_wl = self._watchlist.contains(sig.market_id)
         for text, bg, cmd in [
-            ("Add to Watchlist",   PURPLE,    lambda s=sig: self._add_watchlist(s)),
+            ("Add to Watchlist"    if not in_wl else "★ In Watchlist",
+             PURPLE                if not in_wl else "#1a3a5a",
+             lambda s=sig: self._add_watchlist(s)),
+            ("Remove from Watchlist", "#374151",  lambda s=sig: self._wl_remove(s)),
             ("Create Paper Trade", GREEN_DARK, lambda s=sig: self._paper_trade(s)),
             ("Exit Paper Trade",   "#0e7490",  self._exit_selected_paper_trade),
+            ("Load Orderbook",     "#1e3a5f",  self._load_orderbook_for_selected),
             ("Mark as Avoid",      RED_DARK,   lambda s=sig: self._mark_avoid(s)),
             ("Export Signal",      GRAY_BTN,   lambda s=sig: self._export_signal(s)),
         ]:
@@ -751,36 +773,43 @@ class AIMarketScannerFrame(tk.Frame):
             bg="#1a0000", fg=RED, font=FS, pady=3).pack(fill="x")
 
     def _build_bottom(self, p):
-        """Bottom area: tabbed — Paper Trades | Scanner Messages | Crypto Prices | Performance."""
+        """
+        Bottom workspace: four panels in a single horizontal row.
+        No tabs. No 2x2 grid. One line, left to right:
+
+          Paper Trades | Scanner Messages | Performance | Crypto Prices
+        """
         outer = tk.Frame(p, bg=BG,
             highlightbackground=BORDER, highlightthickness=1)
         outer.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
-        outer.grid_rowconfigure(1, weight=1)
-        outer.grid_columnconfigure(0, weight=1)
+        outer.grid_rowconfigure(0, weight=1)
+        # Column weights — Paper Trades and Messages wider, Perf and Crypto compact
+        outer.grid_columnconfigure(0, weight=3)   # Paper Trades
+        outer.grid_columnconfigure(1, weight=3)   # Scanner Messages
+        outer.grid_columnconfigure(2, weight=2)   # Performance
+        outer.grid_columnconfigure(3, weight=2)   # Crypto Prices
 
-        tk.Label(outer, text="WORKSPACE", bg=BG, fg=CYAN,
-            font=FB, padx=8, pady=4, anchor="w").grid(row=0, column=0, sticky="ew")
+        # ── shared card builder ────────────────────────────────────────
+        def _card(col, title, title_col=CYAN):
+            """Create one labelled panel card in the horizontal row."""
+            f = tk.Frame(outer, bg=BG,
+                highlightbackground=BORDER, highlightthickness=1)
+            f.grid(row=0, column=col, sticky="nsew", padx=3, pady=3)
+            f.grid_rowconfigure(1, weight=1)
+            f.grid_columnconfigure(0, weight=1)
+            tk.Label(f, text=title, bg=BG, fg=title_col,
+                font=("Segoe UI", 8, "bold"), anchor="w",
+                padx=6, pady=3).grid(row=0, column=0, sticky="ew")
+            body = tk.Frame(f, bg=PANEL_DARK)
+            body.grid(row=1, column=0, sticky="nsew", padx=3, pady=(0,3))
+            body.grid_rowconfigure(0, weight=1)
+            body.grid_columnconfigure(0, weight=1)
+            return body
 
-        # Tab notebook
-        style = ttk.Style()
-        style.configure("Bottom.TNotebook", background=BG, borderwidth=0)
-        style.configure("Bottom.TNotebook.Tab",
-            background=PANEL, foreground=MUTED, padding=[8,3], font=FS)
-        style.map("Bottom.TNotebook.Tab",
-            background=[("selected", PANEL_DARK)],
-            foreground=[("selected", CYAN)])
-
-        nb = ttk.Notebook(outer, style="Bottom.TNotebook")
-        nb.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
-
-        # ── Tab 1: Paper Trades ────────────────────────────────────────
-        pt_frame = tk.Frame(nb, bg=PANEL_DARK)
-        nb.add(pt_frame, text="  Paper Trades  ")
-        pt_frame.grid_rowconfigure(0, weight=1)
-        pt_frame.grid_columnconfigure(0, weight=1)
-
-        lf = tk.Frame(pt_frame, bg=PANEL)
-        lf.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        # ── Col 0: Paper Trades ────────────────────────────────────────
+        pt_body = _card(0, "PAPER TRADES")
+        lf = tk.Frame(pt_body, bg=PANEL_DARK)
+        lf.grid(row=0, column=0, sticky="nsew")
         lf.grid_rowconfigure(0, weight=1)
         lf.grid_columnconfigure(0, weight=1)
 
@@ -788,11 +817,11 @@ class AIMarketScannerFrame(tk.Frame):
                    "Target","Current","P/L","Status")
         self.pt_tree = ttk.Treeview(lf, columns=pt_cols,
             show="headings", style="Scanner.Treeview", height=5)
-        pt_w = {"Time":65,"Market":140,"Side":40,"Entry":45,"Contr":45,
-                "Fee":40,"Target":50,"Current":55,"P/L":55,"Status":55}
+        pt_w = {"Time":58,"Market":120,"Side":36,"Entry":40,"Contr":38,
+                "Fee":36,"Target":46,"Current":50,"P/L":50,"Status":50}
         for col in pt_cols:
             self.pt_tree.heading(col, text=col)
-            self.pt_tree.column(col, width=pt_w.get(col,60),
+            self.pt_tree.column(col, width=pt_w.get(col, 50),
                 anchor="center", stretch=False)
         self.pt_tree.column("Market", anchor="w", stretch=True)
         vsb2 = ttk.Scrollbar(lf, orient="vertical", command=self.pt_tree.yview)
@@ -800,14 +829,10 @@ class AIMarketScannerFrame(tk.Frame):
         self.pt_tree.grid(row=0, column=0, sticky="nsew")
         vsb2.grid(row=0, column=1, sticky="ns")
 
-        # ── Tab 2: Scanner Messages ────────────────────────────────────
-        msg_frame = tk.Frame(nb, bg=PANEL_DARK)
-        nb.add(msg_frame, text="  Scanner Messages  ")
-        msg_frame.grid_rowconfigure(0, weight=1)
-        msg_frame.grid_columnconfigure(0, weight=1)
-
-        rf = tk.Frame(msg_frame, bg=PANEL)
-        rf.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        # ── Col 1: Scanner Messages ────────────────────────────────────
+        msg_body = _card(1, "SCANNER MESSAGES")
+        rf = tk.Frame(msg_body, bg=PANEL_DARK)
+        rf.grid(row=0, column=0, sticky="nsew")
         rf.grid_rowconfigure(0, weight=1)
         rf.grid_columnconfigure(0, weight=1)
 
@@ -819,72 +844,70 @@ class AIMarketScannerFrame(tk.Frame):
         self._log_text.grid(row=0, column=0, sticky="nsew")
         lsb.grid(row=0, column=1, sticky="ns")
 
-        # ── Tab 3: Crypto Prices ───────────────────────────────────────
-        crypto_frame = tk.Frame(nb, bg=PANEL_DARK)
-        nb.add(crypto_frame, text="  Crypto Prices  ")
-        self._build_crypto_tab(crypto_frame)
+        # ── Col 2: Performance ─────────────────────────────────────────
+        perf_body = _card(2, "PERFORMANCE", title_col="#818cf8")
+        self._build_perf_inline(perf_body)
 
-        # ── Tab 4: Performance ─────────────────────────────────────────
-        perf_frame = tk.Frame(nb, bg=PANEL_DARK)
-        nb.add(perf_frame, text="  Performance  ")
-        self._build_perf_tab(perf_frame)
+        # ── Col 3: Crypto Prices ───────────────────────────────────────
+        crypto_body = _card(3, "CRYPTO PRICES", title_col=ORANGE)
+        self._build_crypto_inline(crypto_body)
 
         # Flush buffered logs after widgets exist
         for msg in self._log_queue:
             self._write_log(msg)
         self._log_queue.clear()
 
-    def _build_crypto_tab(self, p):
-        """Crypto Prices tab content."""
+    def _build_crypto_inline(self, p):
+        """Compact crypto price display for the 2×2 bottom grid."""
         p.grid_rowconfigure(0, weight=1)
         p.grid_columnconfigure(0, weight=1)
         p.grid_columnconfigure(1, weight=1)
 
-        for col_i, (sym, entries, col) in enumerate([
-            ("BTC", [("Price","btc_price"),("Bid","btc_bid"),("Ask","btc_ask"),
-                     ("Source","btc_src"),("Updated","btc_ts")], ORANGE),
-            ("ETH", [("Price","eth_price"),("Bid","eth_bid"),("Ask","eth_ask"),
-                     ("Source","eth_src"),("Updated","eth_ts")], "#818cf8"),
-        ]):
+        for col_i, (sym, col) in enumerate([("BTC", ORANGE), ("ETH", "#818cf8")]):
             card = tk.Frame(p, bg=PANEL)
-            card.grid(row=0, column=col_i, sticky="nsew", padx=6, pady=6)
+            card.grid(row=0, column=col_i, sticky="nsew", padx=3, pady=3)
             tk.Label(card, text=sym, bg=PANEL, fg=col, font=FB,
-                pady=6, padx=8).pack(fill="x")
-            for label, key in entries:
+                pady=4, padx=6).pack(fill="x")
+            keys = [
+                ("Price",   f"{sym.lower()}_price"),
+                ("Bid",     f"{sym.lower()}_bid"),
+                ("Ask",     f"{sym.lower()}_ask"),
+                ("Source",  f"{sym.lower()}_src"),
+                ("Updated", f"{sym.lower()}_ts"),
+            ]
+            for label, key in keys:
                 row = tk.Frame(card, bg=PANEL)
-                row.pack(fill="x", padx=8, pady=2)
+                row.pack(fill="x", padx=6, pady=1)
                 tk.Label(row, text=label, bg=PANEL, fg=MUTED,
-                    font=FS, width=10, anchor="w").pack(side="left")
-                lbl = tk.Label(row, text="—", bg=PANEL, fg=TEXT,
-                    font=FM, anchor="w")
+                    font=FS, width=7, anchor="w").pack(side="left")
+                lbl = tk.Label(row, text="—", bg=PANEL, fg=TEXT, font=FM, anchor="w")
                 lbl.pack(side="left")
                 self._crypto_labels[key] = lbl
 
-    def _build_perf_tab(self, p):
-        """Performance tab content."""
+    def _build_perf_inline(self, p):
+        """Compact performance stats for the 2×2 bottom grid."""
         p.grid_rowconfigure(0, weight=1)
         p.grid_columnconfigure(0, weight=1)
-        p.grid_columnconfigure(1, weight=1)
 
         stats = [
-            ("Total trades", "total"),     ("Open",        "open"),
-            ("Closed",       "closed"),    ("Win rate",    "win_rate"),
-            ("Total P/L",    "total_pl"),  ("Unrealized",  "unrealized"),
-            ("Avg P/L",      "avg_pl"),    ("Best trade",  "best_trade"),
-            ("Worst trade",  "worst_trade"),
+            ("Total",     "total"),    ("Open",      "open"),
+            ("Closed",    "closed"),   ("Win rate",  "win_rate"),
+            ("Total P/L", "total_pl"), ("Unreal.",   "unrealized"),
+            ("Best",      "best_trade"),("Worst",    "worst_trade"),
         ]
-        lf = tk.Frame(p, bg=PANEL)
-        lf.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=6, pady=6)
-        tk.Label(lf, text="PAPER PERFORMANCE", bg=PANEL, fg=CYAN,
-            font=FB, anchor="w", padx=8, pady=6).pack(fill="x")
+        sf = tk.Frame(p, bg=PANEL)
+        sf.grid(row=0, column=0, sticky="nsew", padx=3, pady=3)
         for label, key in stats:
-            row = tk.Frame(lf, bg=PANEL)
-            row.pack(fill="x", padx=8, pady=2)
+            row = tk.Frame(sf, bg=PANEL)
+            row.pack(fill="x", padx=6, pady=1)
             tk.Label(row, text=label, bg=PANEL, fg=MUTED,
-                font=FS, width=14, anchor="w").pack(side="left")
+                font=FS, width=9, anchor="w").pack(side="left")
             lbl = tk.Label(row, text="—", bg=PANEL, fg=TEXT, font=FM, anchor="w")
             lbl.pack(side="left")
             self._perf_labels[key] = lbl
+
+
+
 
     def _initial_load(self):
         self._safe_log(f"Scanner starting — mode: {cfg.effective_mode()}")
@@ -1054,6 +1077,14 @@ class AIMarketScannerFrame(tk.Frame):
         ticker = sel[0]
         self._watchlist.remove(ticker)
         self._refresh_wl_tree()
+
+    def _wl_remove(self, sig):
+        """Remove a signal from watchlist via Signal Detail panel."""
+        removed = self._watchlist.remove(sig.market_id)
+        if removed:
+            self._refresh_wl_tree()
+        # Refresh detail panel to update button label
+        self._show_signal_detail(sig)
 
     def _wl_clear_stale(self):
         """Clear STALE/EXPIRED watchlist entries."""
@@ -1318,8 +1349,11 @@ class AIMarketScannerFrame(tk.Frame):
 
     def _paper_trade(self, sig):
         """Create paper trade via PaperTradeEngine. No real orders."""
-        if sig.ask_price <= 0:
-            self._safe_log("Cannot create paper trade — no valid entry price (ask = N/A).")
+        if not sig.ask_price or sig.ask_price <= 0:
+            self._safe_log(
+                f"Cannot create paper trade for {sig.market_id}: "
+                f"no valid entry price (ask = N/A). "
+                f"Click 'Load Orderbook' first to fetch live bid/ask prices.")
             return
         max_size = self.v_max_size.get()
         trade = self._paper_engine.create_trade(
