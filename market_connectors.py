@@ -579,6 +579,7 @@ class DataLayer:
         self._last_source = "—"
         self._last_count  = 0
         self._last_error  = ""
+        self._snapshot_cache: dict = {}   # ticker → MarketSnapshot
 
     def _get_kalshi_pub(self) -> KalshiPublicConnector:
         if self._kalshi_pub is None:
@@ -671,6 +672,10 @@ class DataLayer:
         if category_filter and category_filter != "All":
             snapshots = [s for s in snapshots if s.category == category_filter]
 
+        # Cache raw snapshots for detail lookup by ticker
+        for snap in snapshots:
+            self._snapshot_cache[snap.market_id] = snap
+
         # Convert to engine dicts
         dicts = [s.to_connector_dict() for s in snapshots]
 
@@ -681,6 +686,10 @@ class DataLayer:
 
         self._log(f"Loaded {len(dicts)} markets from {source}")
         return dicts, source, error
+
+    def get_snapshot(self, ticker: str) -> Optional[MarketSnapshot]:
+        """Return the last known MarketSnapshot for a ticker, or None."""
+        return self._snapshot_cache.get(ticker)
 
     def get_orderbook(self, ticker: str, source: str = "mock") -> Optional[OrderbookSnapshot]:
         """Route orderbook fetch to correct connector."""

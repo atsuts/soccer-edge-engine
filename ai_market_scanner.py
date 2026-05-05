@@ -370,6 +370,17 @@ class AIMarketScannerFrame(tk.Frame):
             activebackground="#0e7490", relief="flat", font=FS,
             pady=4, command=self._refresh_crypto).pack(fill="x", padx=8, pady=4)
 
+        # Category filter
+        tk.Frame(body, bg=BORDER, height=1).pack(fill="x", padx=8, pady=4)
+        tk.Label(body, text="CATEGORY FILTER", bg=PANEL, fg=CYAN,
+            font=FB, anchor="w").pack(fill="x", padx=8, pady=2)
+        self.v_category_filter = tk.StringVar(value="All")
+        for label in ["All", "Crypto", "Economics", "Politics", "Weather", "Other"]:
+            tk.Radiobutton(body, text=label, variable=self.v_category_filter,
+                value=label, bg=PANEL, fg=TEXT, selectcolor=PANEL_DARK,
+                activebackground=PANEL, font=FS,
+                command=self._on_category_filter_change).pack(anchor="w", padx=16)
+
         # Signal filter
         tk.Frame(body, bg=BORDER, height=1).pack(fill="x", padx=8, pady=4)
         tk.Label(body, text="SIGNAL FILTER", bg=PANEL, fg=CYAN,
@@ -689,13 +700,109 @@ class AIMarketScannerFrame(tk.Frame):
 
         # ── 1. Market Overview ────────────────────────────────────────
         f1 = _section("1  MARKET OVERVIEW")
-        _row(f1, "Title",    sig.market_name, TEXT)
-        _row(f1, "Ticker",   sig.market_id)
-        _row(f1, "Category", sig.category)
-        _row(f1, "Source",   self.data_layer._last_source or "—")
-        _row(f1, "Volume",   f"{sig.volume:,}" if sig.volume else "N/A")
+        # Get raw_data from the signal's underlying snapshot if available
+        _rd = {}
+        try:
+            snap = self.data_layer.get_snapshot(sig.market_id)
+            if snap and snap.raw_data:
+                _rd = snap.raw_data
+        except Exception:
+            pass
+
+        def _rd_str(key, default="N/A"):
+            v = _rd.get(key)
+            return str(v).strip() if v else default
+
+        _row(f1, "Title",        sig.market_name, TEXT)
+        _row(f1, "Ticker",       sig.market_id)
+        _row(f1, "Category",     sig.category)
+        _row(f1, "Status",       (_rd_str("status") or
+                                  getattr(snap,"status","N/A") if snap else "N/A"))
+        _row(f1, "Volume",       f"{sig.volume:,}" if sig.volume else "N/A")
+        _row(f1, "Open interest",f"{_rd.get('open_interest','N/A')}")
+        _row(f1, "Source",       self.data_layer._last_source or "—")
+
+        # Expiration / close times
+        exp_raw  = _rd_str("close_time") or _rd_str("expiration_time")
+        sett_raw = _rd_str("expected_expiration_time") or _rd_str("settlement_time")
+        _row(f1, "Closes",       exp_raw)
+        _row(f1, "Settlement",   sett_raw)
+
+        # Expiration countdown
+        try:
+            from datetime import datetime, timezone
+            def _time_left(ts_str):
+                if not ts_str or ts_str == "N/A":
+                    return "N/A"
+                for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z",
+                            "%Y-%m-%d %H:%M:%S"):
+                    try:
+                        if fmt.endswith("Z"):
+                            dt = datetime.strptime(ts_str, fmt).replace(
+                                tzinfo=timezone.utc)
+                        else:
+                            dt = datetime.strptime(ts_str, fmt)
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                        now = datetime.now(timezone.utc)
+                        diff = dt - now
+                        secs = diff.total_seconds()
+                        if secs < 0:
+                            return "CLOSED / EXPIRED"
+                        mins = int(secs // 60)
+                        hrs  = mins // 60
+                        if hrs >= 24:
+                            return f"{hrs//24}d {hrs%24}h remaining"
+                        if hrs >= 1:
+                            return f"{hrs}h {mins%60}m remaining"
+                        if mins < 10:
+                            return f"⚠ {mins}m {int(secs%60)}s — HIGH CAUTION"
+                        if mins < 60:
+                            return f"⚠ CLOSING SOON — {mins}m remaining"
+                        return f"{mins}m remaining"
+                    except Exception:
+                        continue
+                return "N/A"
+
+            tl = _time_left(exp_raw)
+            tl_col = RED if "HIGH CAUTION" in tl else YELLOW if ("SOON" in tl or "CLOSED" in tl) else TEXT
+            _row(f1, "Time left",  tl, tl_col)
+        except Exception:
+            _row(f1, "Time left",  "N/A")
 
         # ── 2. Kalshi Quote ───────────────────────────────────────────
+        # ── 1b. Settlement Rules ─────────────────────────────────
+        f1b = _section("1b  SETTLEMENT RULES")
+        try:
+            rules_primary   = _rd_str("rules_primary", "")
+            rules_secondary = _rd_str("rules_secondary", "")
+            sett_source     = (_rd_str("settlement_source") or
+                               _rd_str("expiration_value", "N/A"))
+            can_close_early = _rd.get("can_close_early")
+            result          = _rd_str("result", "")
+
+            if rules_primary and rules_primary != "N/A":
+                preview = rules_primary[:200] + ("…" if len(rules_primary) > 200 else "")
+                tk.Label(f1b, text=preview, bg=PANEL_DARK, fg=TEXT,
+                    font=FS, padx=8, pady=4, justify="left",
+                    wraplength=260, anchor="w").pack(fill="x")
+            else:
+                _row(f1b, "Rules",
+                     "Settlement rules not available from current market payload.")
+
+            _row(f1b, "Sett. source", sett_source)
+            if result and result not in ("N/A", ""):
+                _row(f1b, "Result", result, CYAN)
+            if can_close_early is not None:
+                _row(f1b, "Early close", "Yes" if can_close_early else "No")
+
+            tk.Label(f1b,
+                text="⚠  Always verify rules before real trading. Paper mode only.",
+                bg="#1a1a2e", fg=YELLOW, font=FS,
+                padx=8, pady=4, justify="left", wraplength=255).pack(fill="x")
+        except Exception as _re:
+            _row(f1b, "Error", f"Could not parse rules: {str(_re)[:50]}", MUTED)
+
         f2 = _section("2  KALSHI QUOTE")
 
         # Prices are in CENTS (0-100) — use format_cents, never format_price
@@ -881,7 +988,81 @@ class AIMarketScannerFrame(tk.Frame):
                 padx=8, pady=4, justify="left",
                 wraplength=260).pack(fill="x", pady=4)
 
-        # ── 8. Action buttons ──────────────────────────────────────────
+        # ── 7b. Risk / Warnings ───────────────────────────────────
+        f_risk = _section("7b  RISK / WARNINGS")
+        try:
+            warnings = []
+            # Market status check
+            mkt_status = _rd_str("status", "").lower()
+            if mkt_status in ("closed", "settled", "finalized"):
+                warnings.append(f"⛔ Market is {mkt_status.upper()} — no new positions")
+            elif "soon" in tl.lower() if 'tl' in dir() else False:
+                warnings.append("⚠ Market closing soon")
+
+            # Price checks
+            if not sig.ask_price or sig.ask_price <= 0:
+                warnings.append("Missing ask price — load orderbook first")
+            if not sig.bid_price or sig.bid_price <= 0:
+                warnings.append("Missing bid price")
+            if sig.spread and sig.spread > 10:
+                warnings.append(f"Wide spread ({sig.spread:.0f}c) — unfavorable entry")
+            if sig.liquidity == "Low":
+                warnings.append("Low liquidity — fill risk")
+            if sig.volume == 0:
+                warnings.append("No volume data available")
+
+            # Model
+            if not sig.fair_price or sig.fair_price <= 0:
+                warnings.append("Fair price model unavailable — cannot calculate edge")
+
+            # Settlement
+            rules_txt = _rd.get("rules_primary", "")
+            if not rules_txt:
+                warnings.append("Settlement rules not available in payload")
+
+            # Watchlist avoid
+            if self._watchlist.contains(sig.market_id):
+                wl_entry = self._watchlist.get(sig.market_id)
+                if wl_entry and wl_entry.avoided:
+                    warnings.append("User marked this market as AVOID")
+
+            # Crypto reference
+            ctx_check = parse_crypto_market_title(sig.market_name)
+            if ctx_check.asset != "UNKNOWN" and ctx_check.asset not in self._crypto_prices:
+                warnings.append(f"Crypto reference ({ctx_check.asset}) not loaded")
+
+            if warnings:
+                for w in warnings:
+                    col = RED if w.startswith("⛔") else YELLOW
+                    tk.Label(f_risk, text=f"  • {w}", bg=PANEL_DARK, fg=col,
+                        font=FS, padx=8, anchor="w", wraplength=255).pack(fill="x")
+            else:
+                tk.Label(f_risk, text="  No major scanner warnings.",
+                    bg=PANEL_DARK, fg=GREEN, font=FS,
+                    padx=8, pady=4, anchor="w").pack(fill="x")
+        except Exception as _we:
+            _row(f_risk, "Error", f"Warning check failed: {str(_we)[:50]}", MUTED)
+
+        # ── 7c. Watchlist Status ───────────────────────────────────
+        f_wl = _section("7c  WATCHLIST STATUS")
+        try:
+            if self._watchlist.contains(sig.market_id):
+                wle = self._watchlist.get(sig.market_id)
+                _row(f_wl, "Status",     "★ WATCHING",  CYAN)
+                _row(f_wl, "Added at",   wle.time_added or "N/A")
+                _row(f_wl, "Signal",     wle.signal)
+                _row(f_wl, "User status",wle.status,
+                     RED if wle.avoided else YELLOW if wle.status=="ALERT" else GREEN)
+                if wle.last_alert_msg:
+                    _row(f_wl, "Last alert", wle.last_alert_msg[:40] or "None")
+                if wle.alert_note:
+                    _row(f_wl, "Note",      wle.alert_note[:40])
+            else:
+                _row(f_wl, "Status", "Not in watchlist")
+        except Exception as _wle:
+            _row(f_wl, "Error", str(_wle)[:50], MUTED)
+
+                # ── 8. Action buttons ──────────────────────────────────────────
         bf = tk.Frame(inner, bg=PANEL)
         bf.pack(fill="x", padx=4, pady=4)
         in_wl = self._watchlist.contains(sig.market_id)
@@ -1533,8 +1714,27 @@ class AIMarketScannerFrame(tk.Frame):
         """
         Create paper trade locally. Does NOT call any Kalshi order endpoint.
         No real orders. No account balance used.
-        Blocks creation if ask price is missing.
+        Blocks if ask price missing or market closed.
         """
+        # Check if market is closed
+        try:
+            snap = self.data_layer.get_snapshot(sig.market_id)
+            if snap:
+                status = getattr(snap, "status", "open") or "open"
+                if status.lower() in ("closed", "settled", "finalized"):
+                    self._safe_log(
+                        f"Paper trade blocked: {sig.market_id} is {status.upper()}. "
+                        f"Cannot enter a closed market.")
+                    return
+            raw_data = snap.raw_data if snap and snap.raw_data else {}
+            rules_txt = raw_data.get("rules_primary", "")
+            if not rules_txt:
+                self._safe_log(
+                    f"Paper trade created without settlement rules available "
+                    f"for {sig.market_id}. Paper mode only — no real order placed.")
+        except Exception:
+            pass
+
         if not sig.ask_price or sig.ask_price <= 0:
             self._safe_log(
                 f"Paper trade blocked for {sig.market_id}: "
@@ -1641,20 +1841,41 @@ class AIMarketScannerFrame(tk.Frame):
         """Re-populate tree when signal filter changes."""
         self._populate_tree()
 
+    def _on_category_filter_change(self):
+        """Re-populate tree when category filter changes."""
+        self._populate_tree()
+
     def _filtered_signals(self):
-        """Return signals filtered by the signal filter dropdown."""
-        f = self.v_signal_filter.get() if hasattr(self, 'v_signal_filter') else "All"
+        """Return signals filtered by signal and category filter dropdowns."""
+        f    = self.v_signal_filter.get()   if hasattr(self, 'v_signal_filter')   else "All"
+        cat  = self.v_category_filter.get() if hasattr(self, 'v_category_filter') else "All"
+        sigs = self.signals
+
+        # Apply category filter first
+        if cat and cat != "All":
+            CRYPTO_CATS = {"Crypto", "BTC", "ETH", "Bitcoin", "Ethereum"}
+            if cat == "Crypto":
+                sigs = [s for s in sigs if s.category in CRYPTO_CATS or
+                        any(x in s.market_name.upper() for x in ("BTC","ETH","BITCOIN","ETHEREUM","CRYPTO"))]
+            elif cat == "Other":
+                known = {"Economics","Politics","Weather","Crypto","BTC","ETH"}
+                sigs = [s for s in sigs if s.category not in known and
+                        not any(x in s.market_name.upper() for x in ("BTC","ETH","BITCOIN"))]
+            else:
+                sigs = [s for s in sigs if s.category == cat]
+
+        # Apply signal filter
         if f == "All":
-            return self.signals
+            return sigs
         WATCH_PLUS  = {"WATCH","PAPER ONLY","POSSIBLE EDGE","ENTRY","STRONG ENTRY"}
         POSS_EDGE   = {"POSSIBLE EDGE","ENTRY","STRONG ENTRY"}
         DATA_NEEDED = {"DATA NEEDED"}
         AVOID       = {"AVOID","NO TRADE"}
-        if f == "Watch+":       return [s for s in self.signals if s.signal in WATCH_PLUS]
-        if f == "Possible Edge":return [s for s in self.signals if s.signal in POSS_EDGE]
-        if f == "Data Needed":  return [s for s in self.signals if s.signal in DATA_NEEDED]
-        if f == "Avoid":        return [s for s in self.signals if s.signal in AVOID]
-        return self.signals
+        if f == "Watch+":       return [s for s in sigs if s.signal in WATCH_PLUS]
+        if f == "Possible Edge":return [s for s in sigs if s.signal in POSS_EDGE]
+        if f == "Data Needed":  return [s for s in sigs if s.signal in DATA_NEEDED]
+        if f == "Avoid":        return [s for s in sigs if s.signal in AVOID]
+        return sigs
 
     def _safe_log(self, msg: str):
         """Log safely — buffers if widget not built yet."""
