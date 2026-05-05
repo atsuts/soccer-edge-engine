@@ -164,8 +164,29 @@ class AIMarketScannerFrame(tk.Frame):
         self.grid_rowconfigure(0, weight=0)   # header fixed height
         self.grid_rowconfigure(1, weight=1)   # body expands
         self.grid_columnconfigure(0, weight=1)
-        self._build_header()
-        self._build_body()
+        try:
+            self._build_header()
+            self._build_body()
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            # Show visible error panel instead of blank page
+            err_frame = tk.Frame(self, bg="#1a0000",
+                highlightbackground="#ef4444", highlightthickness=2)
+            err_frame.grid(row=1, column=0, sticky="nsew", padx=8, pady=8)
+            tk.Label(err_frame,
+                text="AI Scanner failed to load",
+                bg="#1a0000", fg="#ef4444",
+                font=("Segoe UI", 14, "bold"), pady=20).pack()
+            tk.Label(err_frame,
+                text=str(exc),
+                bg="#1a0000", fg="#fca5a5",
+                font=("Consolas", 9), wraplength=600,
+                justify="left", padx=20).pack()
+            tk.Label(err_frame,
+                text="Check terminal for full traceback.",
+                bg="#1a0000", fg="#94a3b8",
+                font=("Segoe UI", 9), pady=10).pack()
 
     def _build_header(self):
         hdr = tk.Frame(self, bg=TOP)
@@ -402,7 +423,6 @@ class AIMarketScannerFrame(tk.Frame):
 
     def _build_center(self, p):
         p.grid_rowconfigure(0, weight=1)
-        p.grid_rowconfigure(1, weight=0)
         p.grid_columnconfigure(0, weight=1)
 
         # ── Top: Signal Scanner table ─────────────────────────────────
@@ -458,8 +478,10 @@ class AIMarketScannerFrame(tk.Frame):
             self.tree.tag_configure(sig.replace(" ", "_"),
                 background=colors["bg"], foreground=colors["fg"])
 
-        # ── Bottom-center: Watchlist / Alerts / Candidates tabs ───────
-        self._build_center_tabs(p)
+        # NOTE: Watchlist tabs removed from center column — 
+        # they caused PanedWindow layout to break (row=1 with weight=0 
+        # in a PanedWindow child frame). Watchlist accessible via 
+        # Add to Watchlist button in Signal Detail.
 
     def _build_center_tabs(self, p):
         """Bottom-center tabbed area: Watchlist, Alerts, Paper Candidates."""
@@ -663,14 +685,34 @@ class AIMarketScannerFrame(tk.Frame):
 
         # ── 2. Kalshi Quote ───────────────────────────────────────────
         f2 = _section("2  KALSHI QUOTE")
-        _row(f2, "Side",     sig.side, CYAN)
-        _row(f2, "Bid",      format_cents(sig.bid_price)  if sig.bid_price  else "N/A")
-        _row(f2, "Ask",      format_cents(sig.ask_price)  if sig.ask_price  else "N/A")
-        _row(f2, "Last",     format_cents(sig.last_price) if sig.last_price else "N/A")
-        _row(f2, "Spread",   format_cents(sig.spread)     if sig.spread     else "N/A")
-        _row(f2, "Liquidity",sig.liquidity)
-        _row(f2, "Data Qual.",sig.data_quality)
 
+        # Prices are in CENTS (0-100) — use format_cents, never format_price
+        def _fc(v):
+            return format_cents(v) if (v is not None and v > 0) else "N/A"
+
+        bid  = sig.bid_price  or None
+        ask  = sig.ask_price  or None
+        last = sig.last_price or None
+
+        # Infer complementary prices: YES + NO = 100c in a binary market
+        yes_bid = bid  if sig.side == "YES" else (round(100 - ask, 1)  if ask  else None)
+        yes_ask = ask  if sig.side == "YES" else (round(100 - bid, 1)  if bid  else None)
+        no_bid  = bid  if sig.side == "NO"  else (round(100 - ask, 1)  if ask  else None)
+        no_ask  = ask  if sig.side == "NO"  else (round(100 - bid, 1)  if bid  else None)
+
+        _row(f2, "Side",     sig.side, CYAN)
+        _row(f2, "YES bid",  _fc(yes_bid))
+        _row(f2, "YES ask",  (_fc(yes_ask) + " *") if sig.side == "NO" and yes_ask else _fc(yes_ask))
+        _row(f2, "NO  bid",  _fc(no_bid))
+        _row(f2, "NO  ask",  (_fc(no_ask) + " *") if sig.side == "YES" and no_ask else _fc(no_ask))
+        _row(f2, "Last",     _fc(last))
+        _row(f2, "Spread",   _fc(sig.spread) if sig.spread else "N/A")
+        _row(f2, "Volume",   f"{sig.volume:,}" if sig.volume else "N/A")
+        _row(f2, "Liquidity",sig.liquidity)
+        _row(f2, "Data qual.",sig.data_quality)
+        if sig.side in ("YES","NO") and (yes_ask or no_ask):
+            tk.Label(f2, text="* = inferred from complementary side",
+                bg=PANEL_DARK, fg=MUTED, font=FS, padx=6).pack(anchor="w")
         # ── 3. Crypto Reference ───────────────────────────────────────
         ctx = parse_crypto_market_title(sig.market_name)
         if ctx.asset != "UNKNOWN":
@@ -750,7 +792,23 @@ class AIMarketScannerFrame(tk.Frame):
                 bg="#1a1a2e", fg=YELLOW, font=FS, padx=8, pady=4,
                 justify="left", wraplength=240).pack(fill="x", padx=4, pady=4)
 
-        # ── 7. Action buttons ─────────────────────────────────────────
+        # ── 7. Why / Explanation ──────────────────────────────────────
+        f7 = _section("7  WHY / EXPLANATION")
+        reason_text = sig.reason or "No explanation available."
+        tk.Label(f7, text=reason_text,
+            bg=PANEL_DARK, fg=MUTED, font=FS,
+            padx=8, pady=6, justify="left",
+            wraplength=260, anchor="w").pack(fill="x")
+
+        if not cfg.ENABLE_FAIR_PRICE_MODEL:
+            tk.Label(f7,
+                text=("Fair price model: OFF  |  Signal stays DATA NEEDED  |  "
+                      "Set ENABLE_FAIR_PRICE_MODEL=true in .env to enable."),
+                bg="#1a1a2e", fg=YELLOW, font=FS,
+                padx=8, pady=4, justify="left",
+                wraplength=260).pack(fill="x", pady=4)
+
+        # ── 8. Action buttons ──────────────────────────────────────────
         bf = tk.Frame(inner, bg=PANEL)
         bf.pack(fill="x", padx=4, pady=4)
         in_wl = self._watchlist.contains(sig.market_id)
@@ -858,7 +916,7 @@ class AIMarketScannerFrame(tk.Frame):
         self._log_queue.clear()
 
     def _build_crypto_inline(self, p):
-        """Compact crypto price display for the 2×2 bottom grid."""
+        """Compact crypto price display — horizontal bottom card."""
         p.grid_rowconfigure(0, weight=1)
         p.grid_columnconfigure(0, weight=1)
         p.grid_columnconfigure(1, weight=1)
@@ -872,6 +930,8 @@ class AIMarketScannerFrame(tk.Frame):
                 ("Price",   f"{sym.lower()}_price"),
                 ("Bid",     f"{sym.lower()}_bid"),
                 ("Ask",     f"{sym.lower()}_ask"),
+                ("1m chg",  f"{sym.lower()}_1m"),
+                ("5m chg",  f"{sym.lower()}_5m"),
                 ("Source",  f"{sym.lower()}_src"),
                 ("Updated", f"{sym.lower()}_ts"),
             ]
@@ -885,15 +945,22 @@ class AIMarketScannerFrame(tk.Frame):
                 self._crypto_labels[key] = lbl
 
     def _build_perf_inline(self, p):
-        """Compact performance stats for the 2×2 bottom grid."""
+        """Compact performance stats — shown in bottom horizontal card."""
         p.grid_rowconfigure(0, weight=1)
         p.grid_columnconfigure(0, weight=1)
 
         stats = [
-            ("Total",     "total"),    ("Open",      "open"),
-            ("Closed",    "closed"),   ("Win rate",  "win_rate"),
-            ("Total P/L", "total_pl"), ("Unreal.",   "unrealized"),
-            ("Best",      "best_trade"),("Worst",    "worst_trade"),
+            ("Total",       "total"),
+            ("Open",        "open"),
+            ("Closed",      "closed"),
+            ("Wins",        "wins"),
+            ("Win rate",    "win_rate"),
+            ("Realized P/L","total_pl"),
+            ("Unrealized",  "unrealized"),
+            ("Avg P/L",     "avg_pl"),
+            ("Best",        "best_trade"),
+            ("Worst",       "worst_trade"),
+            ("Updated",     "perf_updated"),
         ]
         sf = tk.Frame(p, bg=PANEL)
         sf.grid(row=0, column=0, sticky="nsew", padx=3, pady=3)
@@ -901,7 +968,7 @@ class AIMarketScannerFrame(tk.Frame):
             row = tk.Frame(sf, bg=PANEL)
             row.pack(fill="x", padx=6, pady=1)
             tk.Label(row, text=label, bg=PANEL, fg=MUTED,
-                font=FS, width=9, anchor="w").pack(side="left")
+                font=FS, width=12, anchor="w").pack(side="left")
             lbl = tk.Label(row, text="—", bg=PANEL, fg=TEXT, font=FM, anchor="w")
             lbl.pack(side="left")
             self._perf_labels[key] = lbl
@@ -1082,8 +1149,11 @@ class AIMarketScannerFrame(tk.Frame):
         """Remove a signal from watchlist via Signal Detail panel."""
         removed = self._watchlist.remove(sig.market_id)
         if removed:
-            self._refresh_wl_tree()
-        # Refresh detail panel to update button label
+            try:
+                self._refresh_wl_tree()
+            except AttributeError:
+                pass   # wl_tree may not exist if watchlist tab is not shown
+        # Refresh detail panel to update Add/Remove button label
         self._show_signal_detail(sig)
 
     def _wl_clear_stale(self):
@@ -1092,7 +1162,9 @@ class AIMarketScannerFrame(tk.Frame):
         self._refresh_wl_tree()
 
     def _refresh_wl_tree(self):
-        """Rebuild watchlist treeview from engine."""
+        """Rebuild watchlist treeview from engine. Safe if wl_tree not built yet."""
+        if not hasattr(self, 'wl_tree') or self.wl_tree is None:
+            return
         try:
             self.wl_tree.delete(*self.wl_tree.get_children())
             entries = self._watchlist.all_entries()
@@ -1244,18 +1316,18 @@ class AIMarketScannerFrame(tk.Frame):
             self._safe_log(f"Crypto fetch error: {e}")
 
     def _update_crypto_labels(self):
-        """Update all crypto labels — right-panel card and bottom tab."""
+        """Update all crypto labels — right-panel card and bottom inline card."""
         try:
             btc = self._crypto_prices.get("BTC")
             eth = self._crypto_prices.get("ETH")
 
-            # Right-panel summary labels
+            # Right-panel summary labels (BTC/ETH price + source)
             for sym, snap in [("BTC", btc), ("ETH", eth)]:
                 lbl = self._crypto_labels.get(sym)
                 if lbl:
                     if snap and snap.price:
                         lbl.config(text=snap.price_str,
-                            fg=GREEN if snap.status=="ok" else YELLOW)
+                            fg=GREEN if snap.status == "ok" else YELLOW)
                     else:
                         lbl.config(text="N/A", fg=MUTED)
             any_snap = btc or eth
@@ -1266,28 +1338,30 @@ class AIMarketScannerFrame(tk.Frame):
                     self._crypto_labels["updated"].config(
                         text=any_snap.timestamp[11:16] if any_snap.timestamp else "")
 
-            # Bottom crypto tab detailed labels
+            # Bottom inline card labels
             def _upd(key, value, col=None):
                 lbl = self._crypto_labels.get(key)
                 if lbl:
-                    lbl.config(text=value or "N/A")
-                    if col:
-                        lbl.config(fg=col)
+                    lbl.config(text=(value or "N/A"), fg=(col or TEXT))
 
             if btc:
                 _upd("btc_price", btc.price_str,
                      GREEN if btc.status == "ok" else YELLOW)
-                _upd("btc_bid",   f"${btc.bid:,.2f}"  if btc.bid  else "N/A")
-                _upd("btc_ask",   f"${btc.ask:,.2f}"  if btc.ask  else "N/A")
+                _upd("btc_bid",   f"${btc.bid:,.2f}"    if btc.bid  else "N/A")
+                _upd("btc_ask",   f"${btc.ask:,.2f}"    if btc.ask  else "N/A")
+                _upd("btc_1m",    "— (placeholder)")
+                _upd("btc_5m",    "— (placeholder)")
                 _upd("btc_src",   btc.source)
-                _upd("btc_ts",    btc.timestamp[11:16] if btc.timestamp else "N/A")
+                _upd("btc_ts",    btc.timestamp[11:16]   if btc.timestamp else "N/A")
             if eth:
                 _upd("eth_price", eth.price_str,
                      GREEN if eth.status == "ok" else YELLOW)
-                _upd("eth_bid",   f"${eth.bid:,.2f}"  if eth.bid  else "N/A")
-                _upd("eth_ask",   f"${eth.ask:,.2f}"  if eth.ask  else "N/A")
+                _upd("eth_bid",   f"${eth.bid:,.2f}"    if eth.bid  else "N/A")
+                _upd("eth_ask",   f"${eth.ask:,.2f}"    if eth.ask  else "N/A")
+                _upd("eth_1m",    "— (placeholder)")
+                _upd("eth_5m",    "— (placeholder)")
                 _upd("eth_src",   eth.source)
-                _upd("eth_ts",    eth.timestamp[11:16] if eth.timestamp else "N/A")
+                _upd("eth_ts",    eth.timestamp[11:16]   if eth.timestamp else "N/A")
 
         except Exception as e:
             print(f"[crypto labels] {e}")
@@ -1348,12 +1422,22 @@ class AIMarketScannerFrame(tk.Frame):
     # ── Paper trade engine integration ────────────────────────────────────
 
     def _paper_trade(self, sig):
-        """Create paper trade via PaperTradeEngine. No real orders."""
+        """
+        Create paper trade locally. Does NOT call any Kalshi order endpoint.
+        No real orders. No account balance used.
+        Blocks creation if ask price is missing.
+        """
         if not sig.ask_price or sig.ask_price <= 0:
             self._safe_log(
-                f"Cannot create paper trade for {sig.market_id}: "
+                f"Paper trade blocked for {sig.market_id}: "
                 f"no valid entry price (ask = N/A). "
-                f"Click 'Load Orderbook' first to fetch live bid/ask prices.")
+                f"Click 'Load Orderbook' first to fetch live bid/ask prices. "
+                f"No real order was placed.")
+            return
+        try:
+            _ = self._paper_engine
+        except AttributeError:
+            self._safe_log("Paper trade system not ready yet.")
             return
         max_size = self.v_max_size.get()
         trade = self._paper_engine.create_trade(
@@ -1391,9 +1475,11 @@ class AIMarketScannerFrame(tk.Frame):
             for t in reversed(self._paper_engine.all_trades()):
                 pl = t.pl_str
                 pl_col = "win" if "+" in pl else "loss" if "-" in pl else "neutral"
-                self.pt_tree.insert("", "end", iid=t.trade_id, values=(
-                    t.time_opened[11:19],  # time HH:MM:SS
-                    t.market[:20] if hasattr(t,'market') else t.ticker[:20],
+                # Short display name: prefer title truncated, fall back to ticker
+            display_name = (t.title[:22] if t.title else t.ticker[:22])
+            self.pt_tree.insert("", "end", iid=t.trade_id, values=(
+                    t.time_opened[11:19],
+                    display_name,
                     t.side,
                     f"{t.entry_price:.0f}c",
                     str(t.contracts),
@@ -1416,15 +1502,27 @@ class AIMarketScannerFrame(tk.Frame):
             pass
 
     def _update_performance(self):
-        """Refresh performance summary labels."""
+        """Refresh performance summary labels with colors and last-updated timestamp."""
         try:
+            from datetime import datetime
             perf = self._paper_engine.performance_summary()
-            col_map = {"+": GREEN, "-": RED}
+            # Add last updated timestamp
+            perf["perf_updated"] = datetime.now().strftime("%H:%M:%S")
+            # Set zero values explicitly (don't leave "—" when we have real data)
+            for zero_key in ("total","open","closed","wins"):
+                if perf.get(zero_key) == 0:
+                    perf[zero_key] = "0"
             for key, lbl in self._perf_labels.items():
                 val = str(perf.get(key, "—"))
                 col = TEXT
-                if val.startswith("$+"):  col = GREEN
+                if val.startswith("$+"):   col = GREEN
                 elif val.startswith("$-"): col = RED
+                elif key == "win_rate" and val not in ("—", "0.0%"):
+                    try:
+                        pct = float(val.replace("%",""))
+                        col = GREEN if pct >= 50 else RED
+                    except Exception:
+                        pass
                 lbl.config(text=val, fg=col)
         except Exception as e:
             print(f"[perf] {e}")
@@ -1451,3 +1549,15 @@ class AIMarketScannerFrame(tk.Frame):
     def _clear(self, widget):
         for w in widget.winfo_children():
             w.destroy()
+
+    def _write_log(self, msg: str):
+        try:
+            ts = datetime.now().strftime("%H:%M:%S")
+            self._log_text.configure(state="normal")
+            self._log_text.insert("end", f"[{ts}] {msg}\n")
+            self._log_text.see("end")
+            self._log_text.configure(state="disabled")
+        except Exception:
+            pass
+
+

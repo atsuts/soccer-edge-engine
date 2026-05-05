@@ -312,6 +312,7 @@ class SoccerEdgeApp:
             self.status_label.config(
                 text=f"Last Load: live API  |  Matches: {len(MATCHES)}  |  Live: {live_n}",
                 fg=GREEN)
+        self._rebuild_country_combo()
         self.render_matches()
 
     def _ingest_today(self, api_matches):
@@ -326,6 +327,7 @@ class SoccerEdgeApp:
             existing.add(fid)
             added += 1
         if added:
+            self._rebuild_country_combo()
             self.render_matches()
 
     def _api_to_match(self, m, gui_st):
@@ -768,15 +770,113 @@ class SoccerEdgeApp:
         self.filter_combos[key] = cb
 
     def _on_filter(self, key):
+        """
+        Called when any filter dropdown changes.
+        Rebuilds dependent dropdowns from actual loaded MATCHES data.
+        """
         if key == "country":
             country = self.filters["country"].get()
-            vals = self._league_opts(country)
+            # Build league list from actual loaded matches, not static dict
+            vals = self._league_opts_dynamic(country)
             self.filter_combos["league"].configure(values=vals)
-            if self.filters["league"].get() not in vals:
+            cur_league = self.filters["league"].get()
+            if cur_league not in vals:
                 self.filters["league"].set("All")
-        # Clear cache so filter changes force a full rebuild
+        # Clear cache so full rebuild happens (not in-place update)
         self._match_row_cache.clear()
         self.render_matches()
+        self._update_filter_counts()
+
+    def _league_opts_dynamic(self, country: str) -> list:
+        """
+        Build league dropdown options from actual loaded MATCHES.
+        Falls back to static COUNTRY_LEAGUES dict if no matches for that country.
+        Always includes "All" at the top.
+        """
+        norm_c = (country or "").strip().lower()
+
+        if country == "All":
+            # All leagues from loaded matches + static list
+            leagues_in_data = sorted({
+                m.get("league","").strip() for m in MATCHES
+                if m.get("league","").strip()
+            })
+            static = pref_order(TOP_LEAGUES, ALL_LEAGUES)
+            combined = ["All"]
+            seen = {"All", ""}
+            for lg in leagues_in_data:
+                if lg not in seen:
+                    combined.append(lg)
+                    seen.add(lg)
+            for lg in static[1:]:  # skip the "All" already there
+                if lg not in seen:
+                    combined.append(lg)
+                    seen.add(lg)
+            return combined
+        else:
+            # Leagues for this specific country from loaded matches
+            leagues_in_country = sorted({
+                m.get("league","").strip() for m in MATCHES
+                if (m.get("country","") or "").strip().lower() == norm_c
+                and m.get("league","").strip()
+            })
+            static_leagues = COUNTRY_LEAGUES.get(country, [])
+            combined = ["All"]
+            seen = {"All", ""}
+            for lg in leagues_in_country:
+                if lg not in seen:
+                    combined.append(lg)
+                    seen.add(lg)
+            for lg in static_leagues:
+                if lg not in seen:
+                    combined.append(lg)
+                    seen.add(lg)
+            return combined
+
+    def _update_filter_counts(self):
+        """Update the status label with filter counts."""
+        try:
+            filtered = self.filtered_matches()
+            total    = len(MATCHES)
+            shown    = len(filtered)
+            src_lbl  = "live API" if self.live_api_active else "local mock"
+            if self.status_label:
+                self.status_label.config(
+                    text=f"Last Load: {src_lbl}  |  Matches: {shown} shown / {total} loaded",
+                    fg=GREEN if shown > 0 else YELLOW)
+        except Exception:
+            pass
+
+    def _rebuild_country_combo(self):
+        """
+        Rebuild country dropdown from actual loaded MATCHES data.
+        Called after API data arrives to show real countries.
+        Preserves current selection if still valid.
+        """
+        try:
+            countries_in_data = sorted({
+                m.get("country","").strip() for m in MATCHES
+                if m.get("country","").strip()
+            })
+            static = pref_order(TOP_COUNTRIES, ALL_COUNTRIES)
+            combined = ["All"]
+            seen = {"All", ""}
+            for c in countries_in_data:
+                if c not in seen:
+                    combined.append(c)
+                    seen.add(c)
+            for c in static[1:]:
+                if c not in seen:
+                    combined.append(c)
+                    seen.add(c)
+
+            cur = self.filters["country"].get()
+            self.filter_combos["country"].configure(values=combined)
+            if cur not in combined:
+                self.filters["country"].set("All")
+                self.filters["league"].set("All")
+        except Exception as e:
+            print(f"[filter] _rebuild_country_combo: {e}")
 
     def _league_opts(self, country):
         if country == "All":
@@ -1237,20 +1337,51 @@ class SoccerEdgeApp:
     # ──────────────────────────────────────────
 
     def filtered_matches(self):
-        country = self.filters["country"].get()
-        league  = self.filters["league"].get()
-        tourn   = self.filters["tournament"].get()
-        date_f  = self.filters["date"].get()
-        result  = []
+        """
+        Filter MATCHES by current dropdown selections.
+        Uses normalized comparison (strip + lowercase) to handle API data inconsistencies.
+        'All' in any filter means do not filter by that field.
+        """
+        sel_country = self.filters["country"].get().strip()
+        sel_league  = self.filters["league"].get().strip()
+        sel_tourn   = self.filters["tournament"].get().strip()
+        date_f      = self.filters["date"].get().strip()
+
+        def _norm(s):
+            """Normalize a field value for comparison."""
+            return (s or "").strip().lower()
+
+        nc = _norm(sel_country)
+        nl = _norm(sel_league)
+        nt = _norm(sel_tourn)
+
+        result = []
         for m in MATCHES:
-            if country != "All" and m.get("country","") != country: continue
-            if league  != "All" and m.get("league","")  != league:  continue
-            if tourn   != "All" and m.get("tournament","") != tourn: continue
-            st = m.get("status","")
-            if date_f == "Live"     and st not in ("LIVE","1H","2H","HT","ET","P"): continue
-            if date_f == "Upcoming" and st in ("LIVE","1H","2H","HT","ET","P"):     continue
+            mc = _norm(m.get("country",  ""))
+            ml = _norm(m.get("league",   ""))
+            mt = _norm(m.get("tournament",""))
+
+            if sel_country != "All" and nc != mc:
+                continue
+            if sel_league != "All" and nl != ml:
+                continue
+            if sel_tourn != "All" and nt != mt:
+                continue
+
+            st = m.get("status", "")
+            if date_f == "Live" and st not in ("LIVE","1H","2H","HT","ET","P"):
+                continue
+            if date_f == "Upcoming" and st in ("LIVE","1H","2H","HT","ET","P"):
+                continue
+            if date_f == "Today":
+                import datetime
+                today = datetime.date.today().strftime("%Y-%m-%d")
+                if m.get("date","")[:10] != today:
+                    continue
+
             result.append(m)
         return result
+
 
     def render_matches(self):
         """
@@ -1265,8 +1396,10 @@ class SoccerEdgeApp:
         matches = self.filtered_matches()
         src     = "live API" if self.live_api_active else "local mock"
         live_n  = sum(1 for m in matches if m.get("status") == "LIVE")
+        total_loaded = len(MATCHES)
+        shown        = len(matches)
         self.status_label.config(
-            text=f"Last Load: {src}  |  Matches: {len(matches)}  |  Live: {live_n}")
+            text=f"Last Load: {src}  |  Shown: {shown}/{total_loaded}  |  Live: {live_n}")
 
         # Build a fast lookup: id → match
         new_by_id = {m["id"]: m for m in matches}
@@ -1303,8 +1436,13 @@ class SoccerEdgeApp:
         self._match_row_cache.clear()
 
         if not matches:
-            tk.Label(self.matches_frame,
-                text="No matches for selected filters.",
+            country = self.filters["country"].get()
+            league  = self.filters["league"].get()
+            if country == "All" and league == "All":
+                msg = "No matches available. Try switching to Live API."
+            else:
+                msg = f"No matches for: {country} / {league}"
+            tk.Label(self.matches_frame, text=msg,
                 bg=PANEL_DARK, fg=MUTED, font=FM, pady=12).pack(fill="x")
             return
 
