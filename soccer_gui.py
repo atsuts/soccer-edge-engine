@@ -916,8 +916,17 @@ class SoccerEdgeApp:
         p.grid_rowconfigure(1, weight=1)
         p.grid_columnconfigure(0, weight=1)
 
-        tk.Label(p, text="MATCH ANALYSIS", bg=BG, fg=CYAN,
-            font=FB, anchor="w").grid(row=0, column=0, sticky="ew", pady=(6,4))
+        # Match Analysis header row with maximize button
+        _ma_hdr = tk.Frame(p, bg=BG)
+        _ma_hdr.grid(row=0, column=0, sticky="ew", pady=(6,4))
+        _ma_hdr.grid_columnconfigure(0, weight=1)
+        tk.Label(_ma_hdr, text="MATCH ANALYSIS", bg=BG, fg=CYAN,
+            font=FB, anchor="w").grid(row=0, column=0, sticky="w")
+        tk.Button(_ma_hdr, text="⛶", bg=BG, fg=MUTED,
+            activebackground="#1e293b", activeforeground=CYAN,
+            relief="flat", font=("Segoe UI", 9), padx=4, pady=2,
+            command=lambda: self._maximize_panel(_ma_hdr, "MATCH ANALYSIS")
+        ).grid(row=0, column=1, sticky="e", padx=4)
 
         self.center_split = tk.PanedWindow(p, orient="vertical",
             bg="#22d3ee",
@@ -1211,42 +1220,166 @@ class SoccerEdgeApp:
         self._maximized_overlay = overlay
 
     def _restore_panel(self):
-        """Remove the maximized overlay and return to normal layout."""
+        """Remove the maximized overlay and return to normal layout.
+        Preserves selected match, filters, and all panel state.
+        """
         if hasattr(self, "_maximized_overlay") and self._maximized_overlay:
             try:
                 self._maximized_overlay.destroy()
             except Exception:
                 pass
             self._maximized_overlay = None
+        # Refresh visible panels with current state (no API reload)
+        try:
+            self._render_right_panel()
+        except Exception:
+            pass
 
     def _build_maximized_content(self, p, title):
         """
-        Build richer expanded content when a panel is maximized.
-        Falls back to a helpful message if no special view exists.
+        Build expanded content when a panel is maximized.
+        Uses current live state — same data as normal panels.
         """
-        m = self.current_match
-        if "DECISION" in title:
-            self._render_decision_engine()
-            home = m.get("home","")
-            away = m.get("away","")
-            tk.Label(p,
-                text=(f"Decision Engine expanded for {home} vs {away}."
-                      " All signal detail shown above."),
-                bg=PANEL, fg=MUTED, font=FS, justify="left",
-                padx=12, pady=20).pack(fill="x")
-        elif "MATCH" in title.upper() or "MATCHES" in title.upper():
-            # Expanded match list with more columns
-            tk.Label(p, text="EXPANDED MATCH LIST — More columns visible",
-                bg=PANEL, fg=CYAN, font=FB, anchor="w", padx=8, pady=4).pack(fill="x")
-            self.render_matches()
-        else:
-            tk.Label(p,
-                text=(f"Expanded view: {title}\n"
-                      "This panel is now maximized.\n"
-                      "All content from the normal view is shown.\n"
-                      "Click Restore to return to the normal layout."),
-                bg=PANEL, fg=MUTED, font=FS, justify="left",
-                padx=16, pady=30).pack(fill="both", expand=True)
+        import traceback
+        m = self.current_match or {}
+
+        try:
+            t_up = title.upper()
+
+            if "MATCH ANALYSIS" in t_up:
+                self._build_max_match_analysis(p, m)
+
+            elif "DECISION" in t_up:
+                # Re-render decision engine into this body
+                home = m.get("home", "—")
+                away = m.get("away", "—")
+                if not m:
+                    tk.Label(p, text="No match selected. Select a match first.",
+                        bg=PANEL, fg=MUTED, font=FB, padx=16, pady=20).pack()
+                    return
+                tk.Label(p, text=f"DECISION ENGINE  —  {home} vs {away}",
+                    bg=PANEL, fg=CYAN, font=FB, anchor="w", padx=8, pady=6).pack(fill="x")
+                # Render decision engine inline
+                snap = self._snapshot(m)
+                if snap:
+                    for label, val, col in [
+                        ("Signal",     snap.signal or "—",     CYAN),
+                        ("Best edge",  f"{snap.best_edge:+.1f}" if hasattr(snap,"best_edge") else "N/A", GREEN),
+                        ("Confidence", snap.confidence or "N/A", TEXT),
+                        ("Rec. bet",   snap.recommended_bet or "—", TEXT),
+                    ]:
+                        row = tk.Frame(p, bg=PANEL)
+                        row.pack(fill="x", padx=16, pady=3)
+                        tk.Label(row, text=label, bg=PANEL, fg=MUTED,
+                            font=FS, width=14, anchor="w").pack(side="left")
+                        tk.Label(row, text=val, bg=PANEL, fg=col,
+                            font=FM, anchor="w").pack(side="left")
+                else:
+                    tk.Label(p, text="No analysis data. Select a match and enable Live API.",
+                        bg=PANEL, fg=MUTED, font=FS, padx=16, pady=12).pack()
+
+            elif "MATCH" in t_up or "MATCHES" in t_up:
+                # Bigger match list
+                tk.Label(p, text="MATCH LIST", bg=PANEL, fg=CYAN,
+                    font=FB, anchor="w", padx=8, pady=4).pack(fill="x")
+                # Matches are in the main matches_frame — just show count/status
+                from soccer_gui import MATCHES
+                matches = self.filtered_matches()
+                tk.Label(p, text=f"{len(matches)} matches  (use normal view to select)",
+                    bg=PANEL, fg=MUTED, font=FS, padx=16, pady=8).pack()
+
+            else:
+                # Generic: show what we know about current state
+                tk.Label(p, text=f"Expanded: {title}",
+                    bg=PANEL, fg=CYAN, font=FB, anchor="w", padx=8, pady=6).pack(fill="x")
+                if m:
+                    home = m.get("home","—")
+                    away = m.get("away","—")
+                    tk.Label(p, text=f"Current match: {home} vs {away}",
+                        bg=PANEL, fg=TEXT, font=FM, padx=16, pady=8).pack()
+                else:
+                    tk.Label(p, text="No match selected.",
+                        bg=PANEL, fg=MUTED, font=FS, padx=16, pady=8).pack()
+
+        except Exception as exc:
+            traceback.print_exc()
+            tk.Label(p, text=f"Maximized view error: {exc}",
+                bg=PANEL, fg=RED, font=FS, padx=12, pady=12,
+                wraplength=500).pack()
+
+    def _build_max_match_analysis(self, p, m):
+        """Expanded Match Analysis — shows current match data in larger view."""
+        if not m:
+            tk.Label(p, text="Select a match to view analysis.",
+                bg=PANEL, fg=MUTED, font=FB, padx=20, pady=40).pack(expand=True)
+            return
+
+        home  = m.get("home",  "—")
+        away  = m.get("away",  "—")
+        score = f"{m.get('home_score',0)} – {m.get('away_score',0)}"
+        stat  = m.get("status","—")
+        mins  = m.get("minute", 0)
+        lge   = m.get("league","—")
+        cty   = m.get("country","—")
+
+        # Match header
+        tk.Label(p, text=f"{home}  vs  {away}",
+            bg=PANEL, fg=TEXT, font=("Segoe UI", 14, "bold"),
+            pady=12, anchor="center").pack(fill="x")
+        tk.Label(p, text=f"Score: {score}   |   Status: {stat}   |   {mins}'",
+            bg=PANEL, fg=CYAN, font=FM, pady=4, anchor="center").pack(fill="x")
+        tk.Label(p, text=f"{lge}  —  {cty}",
+            bg=PANEL, fg=MUTED, font=FS, pady=2, anchor="center").pack(fill="x")
+
+        tk.Frame(p, bg=BORDER, height=1).pack(fill="x", padx=12, pady=8)
+
+        # Stats grid
+        stat_pairs = [
+            ("Venue",       m.get("venue","—")),
+            ("Referee",     m.get("referee","—") or "N/A"),
+            ("Home form",   " ".join(m.get("home_form",[]) or ["?","?","?","?","?"])),
+            ("Away form",   " ".join(m.get("away_form",[]) or ["?","?","?","?","?"])),
+            ("Home avg G",  str(m.get("home_avg","—"))),
+            ("Away avg G",  str(m.get("away_avg","—"))),
+            ("Date",        m.get("date","—")),
+        ]
+        for label, val in stat_pairs:
+            row = tk.Frame(p, bg=PANEL)
+            row.pack(fill="x", padx=20, pady=2)
+            tk.Label(row, text=label, bg=PANEL, fg=MUTED,
+                font=FS, width=14, anchor="w").pack(side="left")
+            tk.Label(row, text=str(val), bg=PANEL, fg=TEXT,
+                font=FM, anchor="w").pack(side="left")
+
+        # Prediction
+        pred = m.get("pred", (33,33,34))
+        odds = m.get("odds", (2.0, 3.5, 4.0))
+        if pred:
+            tk.Frame(p, bg=BORDER, height=1).pack(fill="x", padx=12, pady=8)
+            tk.Label(p, text="PREDICTION",
+                bg=PANEL, fg=CYAN, font=("Segoe UI",9,"bold"),
+                padx=12, anchor="w").pack(fill="x")
+            for label, pct, odd in zip(
+                [f"{home[:12]} Win", "Draw", f"{away[:12]} Win"],
+                pred, odds
+            ):
+                row = tk.Frame(p, bg=PANEL)
+                row.pack(fill="x", padx=20, pady=2)
+                tk.Label(row, text=label, bg=PANEL, fg=MUTED,
+                    font=FS, width=16, anchor="w").pack(side="left")
+                tk.Label(row, text=f"{pct}%  (odds {odd})",
+                    bg=PANEL, fg=TEXT, font=FM).pack(side="left")
+
+        # Analysis from snap if available
+        snap = self._snapshot(m)
+        if snap and hasattr(snap, "reason") and snap.reason:
+            tk.Frame(p, bg=BORDER, height=1).pack(fill="x", padx=12, pady=8)
+            tk.Label(p, text="ANALYSIS",
+                bg=PANEL, fg=CYAN, font=("Segoe UI",9,"bold"),
+                padx=12, anchor="w").pack(fill="x")
+            tk.Label(p, text=snap.reason or "No analysis.",
+                bg=PANEL, fg=MUTED, font=FS,
+                padx=20, pady=6, justify="left", wraplength=520).pack(fill="x")
 
     def _btn(self, p, text, bg, cmd, width=None, pady=5):
         return tk.Button(p, text=text, bg=bg, fg=TEXT,

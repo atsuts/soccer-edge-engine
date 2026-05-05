@@ -111,6 +111,11 @@ class AIMarketScannerFrame(tk.Frame):
         self._perf_labels    = {}   # widget refs for performance panel
         self._selected_trade = None # currently selected paper trade id
 
+        # Maximize / restore system
+        self._maximized_panel = None      # name of currently maximized panel, or None
+        self._max_frame       = None      # overlay frame (built lazily)
+        self._panel_btns      = {}        # name → maximize button widget ref
+
         # Filter vars
         self.v_data_mode  = tk.StringVar(value=cfg.effective_mode())
         self.v_category   = tk.StringVar(value="All")
@@ -255,14 +260,21 @@ class AIMarketScannerFrame(tk.Frame):
         self._build_right(rf)
         self._build_bottom(bottom_area)
 
-    def _panel(self, parent, title):
+    def _panel(self, parent, title, panel_key=None):
+        """Create a titled panel with optional maximize button."""
         outer = tk.Frame(parent, bg=BG,
             highlightbackground=BORDER, highlightthickness=1)
         outer.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
         outer.grid_rowconfigure(1, weight=1)
         outer.grid_columnconfigure(0, weight=1)
-        tk.Label(outer, text=title, bg=BG, fg=CYAN,
-            font=FB, padx=8, pady=5, anchor="w").grid(row=0, column=0, sticky="ew")
+        # Header row
+        hdr = tk.Frame(outer, bg=BG)
+        hdr.grid(row=0, column=0, sticky="ew")
+        hdr.grid_columnconfigure(0, weight=1)
+        tk.Label(hdr, text=title, bg=BG, fg=CYAN,
+            font=FB, padx=8, pady=5, anchor="w").grid(row=0, column=0, sticky="w")
+        if panel_key:
+            self._max_btn(hdr, panel_key).grid(row=0, column=1, padx=4)
         body = tk.Frame(outer, bg=PANEL)
         body.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
         return body
@@ -270,7 +282,7 @@ class AIMarketScannerFrame(tk.Frame):
     # ── LEFT: Filters + status ─────────────────────────────────────────────
 
     def _build_left(self, p):
-        body = self._panel(p, "FILTERS & SETTINGS")
+        body = self._panel(p, "FILTERS & SETTINGS", panel_key="filters_settings")
         body.grid_rowconfigure(99, weight=1)
 
         def row_w(label, widget_fn):
@@ -454,8 +466,12 @@ class AIMarketScannerFrame(tk.Frame):
         top.grid_rowconfigure(1, weight=1)
         top.grid_columnconfigure(0, weight=1)
 
-        tk.Label(top, text="SIGNAL SCANNER", bg=BG, fg=CYAN,
-            font=FB, padx=8, pady=5, anchor="w").grid(row=0, column=0, sticky="ew")
+        top_hdr = tk.Frame(top, bg=BG)
+        top_hdr.grid(row=0, column=0, sticky="ew")
+        top_hdr.grid_columnconfigure(0, weight=1)
+        tk.Label(top_hdr, text="SIGNAL SCANNER", bg=BG, fg=CYAN,
+            font=FB, padx=8, pady=5, anchor="w").grid(row=0, column=0, sticky="w")
+        self._max_btn(top_hdr, "scanner_table").grid(row=0, column=1, padx=4)
 
         tf = tk.Frame(top, bg=PANEL)
         tf.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
@@ -638,8 +654,12 @@ class AIMarketScannerFrame(tk.Frame):
         outer.grid_rowconfigure(1, weight=1)
         outer.grid_columnconfigure(0, weight=1)
 
-        tk.Label(outer, text="SIGNAL DETAIL", bg=BG, fg=CYAN,
-            font=FB, padx=8, pady=5, anchor="w").grid(row=0, column=0, sticky="ew")
+        hdr_row = tk.Frame(outer, bg=BG)
+        hdr_row.grid(row=0, column=0, sticky="ew")
+        hdr_row.grid_columnconfigure(0, weight=1)
+        tk.Label(hdr_row, text="SIGNAL DETAIL", bg=BG, fg=CYAN,
+            font=FB, padx=8, pady=5, anchor="w").grid(row=0, column=0, sticky="w")
+        self._max_btn(hdr_row, "signal_detail").grid(row=0, column=1, padx=4)
 
         self._detail_body = tk.Frame(outer, bg=PANEL)
         self._detail_body.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
@@ -1102,16 +1122,21 @@ class AIMarketScannerFrame(tk.Frame):
         outer.grid_columnconfigure(3, weight=2)   # Crypto Prices
 
         # ── shared card builder ────────────────────────────────────────
-        def _card(col, title, title_col=CYAN):
+        def _card(col, title, title_col=CYAN, panel_key=None):
             """Create one labelled panel card in the horizontal row."""
             f = tk.Frame(outer, bg=BG,
                 highlightbackground=BORDER, highlightthickness=1)
             f.grid(row=0, column=col, sticky="nsew", padx=3, pady=3)
             f.grid_rowconfigure(1, weight=1)
             f.grid_columnconfigure(0, weight=1)
-            tk.Label(f, text=title, bg=BG, fg=title_col,
+            hdr = tk.Frame(f, bg=BG)
+            hdr.grid(row=0, column=0, sticky="ew")
+            hdr.grid_columnconfigure(0, weight=1)
+            tk.Label(hdr, text=title, bg=BG, fg=title_col,
                 font=("Segoe UI", 8, "bold"), anchor="w",
-                padx=6, pady=3).grid(row=0, column=0, sticky="ew")
+                padx=6, pady=3).grid(row=0, column=0, sticky="w")
+            if panel_key:
+                self._max_btn(hdr, panel_key).grid(row=0, column=1, padx=2)
             body = tk.Frame(f, bg=PANEL_DARK)
             body.grid(row=1, column=0, sticky="nsew", padx=3, pady=(0,3))
             body.grid_rowconfigure(0, weight=1)
@@ -1119,7 +1144,7 @@ class AIMarketScannerFrame(tk.Frame):
             return body
 
         # ── Col 0: Paper Trades ────────────────────────────────────────
-        pt_body = _card(0, "PAPER TRADES")
+        pt_body = _card(0, "PAPER TRADES",   panel_key="paper_trades")
         lf = tk.Frame(pt_body, bg=PANEL_DARK)
         lf.grid(row=0, column=0, sticky="nsew")
         lf.grid_rowconfigure(0, weight=1)
@@ -1142,7 +1167,7 @@ class AIMarketScannerFrame(tk.Frame):
         vsb2.grid(row=0, column=1, sticky="ns")
 
         # ── Col 1: Scanner Messages ────────────────────────────────────
-        msg_body = _card(1, "SCANNER MESSAGES")
+        msg_body = _card(1, "SCANNER MESSAGES", panel_key="scanner_messages")
         rf = tk.Frame(msg_body, bg=PANEL_DARK)
         rf.grid(row=0, column=0, sticky="nsew")
         rf.grid_rowconfigure(0, weight=1)
@@ -1157,11 +1182,11 @@ class AIMarketScannerFrame(tk.Frame):
         lsb.grid(row=0, column=1, sticky="ns")
 
         # ── Col 2: Performance ─────────────────────────────────────────
-        perf_body = _card(2, "PERFORMANCE", title_col="#818cf8")
+        perf_body = _card(2, "PERFORMANCE", title_col="#818cf8", panel_key="performance")
         self._build_perf_inline(perf_body)
 
         # ── Col 3: Crypto Prices ───────────────────────────────────────
-        crypto_body = _card(3, "CRYPTO PRICES", title_col=ORANGE)
+        crypto_body = _card(3, "CRYPTO PRICES", title_col=ORANGE, panel_key="crypto_prices")
         self._build_crypto_inline(crypto_body)
 
         # Flush buffered logs after widgets exist
@@ -1836,6 +1861,528 @@ class AIMarketScannerFrame(tk.Frame):
             print(f"[perf] {e}")
 
     # ── Source change handler ──────────────────────────────────────────────
+
+    # ── Maximize / Restore system ────────────────────────────────────────────
+
+    def _maximize_panel(self, panel_name: str):
+        """
+        Expand panel_name into a full-scanner overlay workspace.
+        Hides the normal body (PanedWindow), shows the overlay frame.
+        Preserves selected market, watchlist, paper trades.
+        """
+        if self._maximized_panel == panel_name:
+            self._restore_panel()
+            return
+
+        # Build overlay frame lazily on first use
+        if self._max_frame is None:
+            self._max_frame = tk.Frame(self, bg=BG)
+            self._max_frame.grid_rowconfigure(0, weight=0)
+            self._max_frame.grid_rowconfigure(1, weight=1)
+            self._max_frame.grid_columnconfigure(0, weight=1)
+
+        self._maximized_panel = panel_name
+
+        # Hide normal body, show overlay
+        try:
+            self._v_pane.grid_remove()
+        except Exception:
+            pass
+        self._max_frame.grid(row=1, column=0, sticky="nsew")
+
+        # Update button labels
+        self._update_max_buttons()
+
+        # Render the expanded content
+        try:
+            self._render_maximized(panel_name)
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            # Show error inside overlay
+            for w in self._max_frame.winfo_children():
+                w.destroy()
+            hdr = tk.Frame(self._max_frame, bg=TOP)
+            hdr.grid(row=0, column=0, sticky="ew", padx=8, pady=4)
+            tk.Label(hdr, text=f"Failed to maximize: {panel_name}",
+                bg=TOP, fg=RED, font=FB).pack(side="left")
+            tk.Button(hdr, text="↩ Restore", bg=PANEL, fg=CYAN,
+                font=FM, relief="flat", padx=8, pady=4,
+                command=self._restore_panel).pack(side="right")
+            tk.Label(self._max_frame, text=str(exc),
+                bg=BG, fg=MUTED, font=FS, wraplength=600,
+                justify="left").grid(row=1, column=0, padx=20, pady=20)
+
+    def _restore_panel(self):
+        """Return to the normal scanner layout.
+        Preserves selected signal, watchlist, paper trades, and filters.
+        """
+        self._maximized_panel = None
+        if self._max_frame:
+            self._max_frame.grid_remove()
+            # Clear maximize content to free memory
+            for w in self._max_frame.winfo_children():
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+        try:
+            self._v_pane.grid(row=1, column=0, sticky="nsew")
+        except Exception:
+            pass
+        self._update_max_buttons()
+        # Refresh normal panels with current state (no API reload)
+        try:
+            self._update_pt_tree()
+            self._update_performance()
+            self._refresh_wl_tree()
+            self._update_crypto_labels()
+        except Exception:
+            pass
+
+    def _update_max_buttons(self):
+        """Update all maximize button labels based on current state."""
+        for name, btn in self._panel_btns.items():
+            try:
+                if self._maximized_panel == name:
+                    btn.config(text="↩", fg=YELLOW)
+                else:
+                    btn.config(text="⛶", fg=MUTED)
+            except Exception:
+                pass
+
+    def _max_btn(self, parent, panel_name: str) -> "tk.Button":
+        """
+        Create a small maximize button for a panel header.
+        Stores ref in self._panel_btns.
+        """
+        btn = tk.Button(parent, text="⛶", bg=TOP, fg=MUTED,
+            activebackground=TOP, relief="flat",
+            font=("Segoe UI", 9), padx=4, pady=1,
+            command=lambda n=panel_name: self._maximize_panel(n))
+        self._panel_btns[panel_name] = btn
+        return btn
+
+    def _render_maximized(self, panel_name: str):
+        """Render expanded content for a given panel into _max_frame."""
+        # Clear previous content
+        for w in self._max_frame.winfo_children():
+            w.destroy()
+
+        # ── Header with title + restore button ────────────────────────
+        hdr = tk.Frame(self._max_frame, bg=TOP)
+        hdr.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
+        titles = {
+            "signal_detail":    "SIGNAL DETAIL — MARKET DEEP DIVE",
+            "scanner_table":    "SIGNAL SCANNER TABLE",
+            "watchlist":        "WATCHLIST",
+            "paper_trades":     "PAPER TRADES",
+            "scanner_messages": "SCANNER MESSAGES",
+            "performance":      "PERFORMANCE",
+            "crypto_prices":    "CRYPTO PRICES",
+        }
+        tk.Label(hdr, text=titles.get(panel_name, panel_name.upper()),
+            bg=TOP, fg=CYAN, font=FB).pack(side="left", padx=8)
+        tk.Button(hdr, text="↩ Restore Normal Layout",
+            bg=PANEL, fg=CYAN, activebackground=PANEL,
+            relief="flat", font=FM, padx=10, pady=4,
+            command=self._restore_panel).pack(side="right", padx=8)
+
+        # ── Body ──────────────────────────────────────────────────────
+        body = tk.Frame(self._max_frame, bg=BG)
+        body.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        body.grid_rowconfigure(0, weight=1)
+        body.grid_columnconfigure(0, weight=1)
+
+        if panel_name == "signal_detail":
+            self._render_max_signal_detail(body)
+        elif panel_name == "scanner_table":
+            self._render_max_scanner_table(body)
+        elif panel_name == "watchlist":
+            self._render_max_watchlist(body)
+        elif panel_name == "paper_trades":
+            self._render_max_paper_trades(body)
+        elif panel_name == "scanner_messages":
+            self._render_max_messages(body)
+        elif panel_name == "performance":
+            self._render_max_performance(body)
+        elif panel_name == "crypto_prices":
+            self._render_max_crypto(body)
+        elif panel_name == "filters_settings":
+            self._render_max_filters(body)
+        else:
+            tk.Label(body, text=f"No expanded view for: {panel_name}",
+                bg=BG, fg=MUTED, font=FM).pack(expand=True)
+
+    # ── Expanded panel renderers ──────────────────────────────────────────
+
+    def _render_max_signal_detail(self, parent):
+        """Expanded Signal Detail — full detail with scrollable sections."""
+        if not self.selected_signal:
+            tk.Label(parent, text="No market selected. Select a market and try again.",
+                bg=BG, fg=MUTED, font=FM).grid(row=0, column=0)
+            return
+        # Reuse the existing _show_signal_detail inside a scrollable canvas
+        canvas = tk.Canvas(parent, bg=BG, highlightthickness=0)
+        vsb    = tk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        inner = tk.Frame(canvas, bg=BG)
+        win   = canvas.create_window((0,0), window=inner, anchor="nw")
+        canvas.bind("<Configure>",
+            lambda e: canvas.itemconfig(win, width=e.width))
+        inner.bind("<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        # Render full detail into inner
+        detail_body = tk.Frame(inner, bg=PANEL)
+        detail_body.pack(fill="both", expand=True, padx=8, pady=8)
+        orig = self._detail_body
+        self._detail_body = detail_body
+        try:
+            self._show_signal_detail(self.selected_signal)
+        finally:
+            self._detail_body = orig
+
+    def _render_max_scanner_table(self, parent):
+        """Expanded scanner table with more columns."""
+        from tkinter import ttk
+        parent.grid_rowconfigure(0, weight=0)
+        parent.grid_rowconfigure(1, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+
+        # Toolbar
+        tb = tk.Frame(parent, bg=TOP)
+        tb.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
+        tk.Label(tb, text=f"{len(self.signals)} markets loaded",
+            bg=TOP, fg=MUTED, font=FS).pack(side="left", padx=8)
+        tk.Button(tb, text="↻ Refresh", bg=PANEL, fg=CYAN,
+            relief="flat", font=FS, padx=8,
+            command=self._refresh).pack(side="right", padx=4)
+
+        # Table
+        cols = ("Market","Side","Signal","Bid","Ask","Spread",
+                "Liquidity","Volume","Fair","Edge","Category","Source")
+        col_w = {"Market":180,"Side":40,"Signal":100,"Bid":45,"Ask":45,
+                 "Spread":50,"Liquidity":65,"Volume":60,"Fair":45,
+                 "Edge":55,"Category":80,"Source":70}
+        tf = tk.Frame(parent, bg=PANEL)
+        tf.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        tf.grid_rowconfigure(0, weight=1)
+        tf.grid_columnconfigure(0, weight=1)
+        tree = ttk.Treeview(tf, columns=cols, show="headings",
+            style="Scanner.Treeview")
+        for col in cols:
+            tree.heading(col, text=col)
+            tree.column(col, width=col_w.get(col,60), anchor="center", stretch=False)
+        tree.column("Market", anchor="w", stretch=True)
+        vsb = ttk.Scrollbar(tf, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(tf, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        # Populate
+        for sig in self._filtered_signals():
+            tag = sig.signal.replace(" ","_")
+            tree.insert("", "end", iid=sig.market_id+"_max", values=(
+                sig.market_name[:35], sig.side, sig.signal,
+                format_cents(sig.bid_price)  if sig.bid_price  else "N/A",
+                format_cents(sig.ask_price)  if sig.ask_price  else "N/A",
+                format_cents(sig.spread)     if sig.spread     else "N/A",
+                sig.liquidity, f"{sig.volume:,}" if sig.volume else "N/A",
+                format_cents(sig.fair_price) if sig.fair_price else "N/A",
+                f"{sig.raw_edge:+.1f}c"      if sig.ask_price  else "N/A",
+                sig.category, self.data_layer._last_source[:8],
+            ), tags=(tag,))
+        for sig_tier, colors in SIG_COLORS.items():
+            tree.tag_configure(sig_tier.replace(" ","_"),
+                background=colors["bg"], foreground=colors["fg"])
+
+    def _render_max_watchlist(self, parent):
+        """Expanded watchlist with full columns."""
+        from tkinter import ttk
+        parent.grid_rowconfigure(1, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+        # Toolbar
+        tb = tk.Frame(parent, bg=TOP)
+        tb.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
+        tk.Button(tb, text="Remove Selected", bg=RED_DARK, fg=TEXT,
+            relief="flat", font=FS, padx=8,
+            command=self._wl_remove_selected).pack(side="left", padx=2)
+        tk.Button(tb, text="Clear Stale", bg=GRAY_BTN, fg=TEXT,
+            relief="flat", font=FS, padx=8,
+            command=self._wl_clear_stale).pack(side="left", padx=2)
+        tk.Label(tb, text=f"{len(self._watchlist.all_entries())} items",
+            bg=TOP, fg=MUTED, font=FS).pack(side="right", padx=8)
+        # Table
+        cols = ("Market","Side","Bid","Ask","Last","Signal","Score",
+                "Spread","Time Left","Target","Ref Price","Status","Updated")
+        col_w = {"Market":160,"Side":40,"Bid":42,"Ask":42,"Last":42,"Signal":90,
+                 "Score":45,"Spread":50,"Time Left":80,"Target":70,
+                 "Ref Price":80,"Status":60,"Updated":60}
+        tf = tk.Frame(parent, bg=PANEL)
+        tf.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        tf.grid_rowconfigure(0, weight=1)
+        tf.grid_columnconfigure(0, weight=1)
+        tree = ttk.Treeview(tf, columns=cols, show="headings",
+            style="Scanner.Treeview")
+        for col in cols:
+            tree.heading(col, text=col)
+            tree.column(col, width=col_w.get(col,55), anchor="center", stretch=False)
+        tree.column("Market", anchor="w", stretch=True)
+        vsb = ttk.Scrollbar(tf, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(tf, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        tree.tag_configure("stale",  foreground=MUTED)
+        tree.tag_configure("active", foreground=GREEN)
+        tree.tag_configure("alert",  foreground=YELLOW)
+        tree.tag_configure("avoid",  foreground=RED)
+        # Store ref so toolbar buttons work
+        self._max_wl_tree = tree
+        for e in self._watchlist.all_entries():
+            tag = "avoid" if e.avoided else ("alert" if e.status=="ALERT" else
+                  "stale" if e.status in ("STALE","EXPIRED") else "active")
+            ref = f"${e.reference_price:,.0f}" if e.reference_price else "N/A"
+            tree.insert("", "end", iid=e.ticker+"_wmax", values=(
+                e.title[:25], e.side, e.bid_str, e.ask_str, e.last_str,
+                e.signal, str(e.score),
+                f"{e.spread:.0f}c" if e.spread else "N/A",
+                "N/A",   # time left — not stored per-entry yet
+                e.target_str, ref, e.status,
+                e.last_seen[11:16] if e.last_seen else "N/A",
+            ), tags=(tag,))
+
+    def _render_max_paper_trades(self, parent):
+        """Expanded paper trades log."""
+        from tkinter import ttk
+        parent.grid_rowconfigure(1, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+        tb = tk.Frame(parent, bg=TOP)
+        tb.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
+        trades = self._paper_engine.all_trades()
+        tk.Label(tb, text=f"{len(trades)} trades",
+            bg=TOP, fg=MUTED, font=FS).pack(side="left", padx=8)
+        tk.Button(tb, text="Exit Selected", bg="#0e7490", fg=TEXT,
+            relief="flat", font=FS, padx=8,
+            command=self._exit_selected_paper_trade).pack(side="right", padx=4)
+        cols = ("Opened","Market","Side","Entry","Current","Contracts",
+                "Unreal. P/L","Real. P/L","Status","Notes")
+        col_w = {"Opened":70,"Market":160,"Side":38,"Entry":45,"Current":50,
+                 "Contracts":55,"Unreal. P/L":70,"Real. P/L":70,"Status":55,"Notes":80}
+        tf = tk.Frame(parent, bg=PANEL)
+        tf.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        tf.grid_rowconfigure(0, weight=1)
+        tf.grid_columnconfigure(0, weight=1)
+        tree = ttk.Treeview(tf, columns=cols, show="headings",
+            style="Scanner.Treeview")
+        for col in cols:
+            tree.heading(col, text=col)
+            tree.column(col, width=col_w.get(col,60), anchor="center", stretch=False)
+        tree.column("Market", anchor="w", stretch=True)
+        vsb = ttk.Scrollbar(tf, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        self._max_pt_tree = tree
+        self._on_pt_select_ref = lambda _e: setattr(
+            self, '_selected_trade',
+            (tree.selection() or [None])[0])
+        tree.bind("<<TreeviewSelect>>", self._on_pt_select_ref)
+        for t in reversed(trades):
+            unreal = t.pl_str if t.status == "OPEN" else "—"
+            real   = t.pl_str if t.status == "CLOSED" else "—"
+            tree.insert("", "end", iid=t.trade_id+"_max", values=(
+                t.time_opened[5:16], t.title[:25], t.side,
+                f"{t.entry_price:.0f}c", f"{t.current_price:.0f}c",
+                str(t.contracts), unreal, real, t.status, t.notes[:20],
+            ))
+
+    def _render_max_messages(self, parent):
+        """Expanded scanner messages log."""
+        parent.grid_rowconfigure(1, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+        tb = tk.Frame(parent, bg=TOP)
+        tb.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
+        tk.Button(tb, text="Clear", bg=PANEL, fg=MUTED,
+            relief="flat", font=FS, padx=8,
+            command=lambda: self._max_msg_text.configure(state="normal") or
+                self._max_msg_text.delete("1.0","end") or
+                self._max_msg_text.configure(state="disabled")
+                if hasattr(self,"_max_msg_text") else None
+            ).pack(side="right", padx=4)
+        mf = tk.Frame(parent, bg=PANEL)
+        mf.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        mf.grid_rowconfigure(0, weight=1)
+        mf.grid_columnconfigure(0, weight=1)
+        txt = tk.Text(mf, bg=PANEL_DARK, fg=GREEN, font=FM,
+            state="disabled", wrap="word", relief="flat")
+        vsb = tk.Scrollbar(mf, command=txt.yview)
+        txt.configure(yscrollcommand=vsb.set)
+        txt.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        self._max_msg_text = txt
+        # Copy existing log content
+        try:
+            existing = self._log_text.get("1.0", "end")
+            txt.configure(state="normal")
+            txt.insert("end", existing)
+            txt.configure(state="disabled")
+            txt.see("end")
+        except Exception:
+            pass
+
+    def _render_max_performance(self, parent):
+        """Expanded performance panel."""
+        parent.grid_rowconfigure(0, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+        pf = tk.Frame(parent, bg=PANEL)
+        pf.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        try:
+            perf = self._paper_engine.performance_summary()
+            stats = [
+                ("Total paper trades",  perf.get("total","—")),
+                ("Open trades",         perf.get("open","—")),
+                ("Closed trades",       perf.get("closed","—")),
+                ("Wins",                perf.get("wins","—")),
+                ("Win rate",            perf.get("win_rate","—")),
+                ("Realized P/L",        perf.get("total_pl","—")),
+                ("Unrealized P/L",      perf.get("unrealized","—")),
+                ("Avg P/L",             perf.get("avg_pl","—")),
+                ("Best trade",          perf.get("best_trade","—")),
+                ("Worst trade",         perf.get("worst_trade","—")),
+            ]
+            tk.Label(pf, text="PAPER PERFORMANCE", bg=PANEL, fg=CYAN,
+                font=("Segoe UI", 12, "bold"), pady=12, anchor="w",
+                padx=16).pack(fill="x")
+            for label, val in stats:
+                row = tk.Frame(pf, bg=PANEL)
+                row.pack(fill="x", padx=16, pady=3)
+                tk.Label(row, text=label, bg=PANEL, fg=MUTED,
+                    font=FS, width=20, anchor="w").pack(side="left")
+                col = TEXT
+                val_s = str(val)
+                if "$+" in val_s: col = GREEN
+                elif "$-" in val_s: col = RED
+                tk.Label(row, text=val_s, bg=PANEL, fg=col,
+                    font=("Consolas", 11, "bold"), anchor="w").pack(side="left")
+        except Exception as exc:
+            tk.Label(pf, text=f"Performance error: {exc}",
+                bg=PANEL, fg=RED, font=FS, padx=16).pack()
+
+    def _render_max_filters(self, parent):
+        """Expanded Filters & Settings — read-only view of current scanner state."""
+        parent.grid_rowconfigure(0, weight=1)
+        parent.grid_columnconfigure(0, weight=0)
+        parent.grid_columnconfigure(1, weight=1)
+
+        def _section_header(p, text):
+            tk.Label(p, text=text, bg=PANEL, fg=CYAN,
+                font=("Segoe UI", 9, "bold"), anchor="w",
+                padx=8, pady=4).pack(fill="x")
+
+        def _info_row(p, label, val, col=None):
+            row = tk.Frame(p, bg=PANEL)
+            row.pack(fill="x", padx=12, pady=2)
+            tk.Label(row, text=label, bg=PANEL, fg=MUTED,
+                font=FS, width=22, anchor="w").pack(side="left")
+            tk.Label(row, text=str(val), bg=PANEL, fg=(col or TEXT),
+                font=FM, anchor="w").pack(side="left")
+
+        lf = tk.Frame(parent, bg=PANEL)
+        lf.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+
+        import scanner_config as cfg_mod
+
+        _section_header(lf, "DATA & CONNECTION")
+        _info_row(lf, "Data mode",        cfg_mod.effective_mode())
+        _info_row(lf, "Kalshi env",        cfg_mod.KALSHI_ENV)
+        _info_row(lf, "Kalshi ready",      "YES" if cfg_mod.kalshi_auth_ready() else "NO")
+        _info_row(lf, "Auth status",       self.data_layer._last_source or "—")
+
+        tk.Frame(lf, bg=BORDER, height=1).pack(fill="x", padx=6, pady=6)
+        _section_header(lf, "SAFETY STATUS")
+        _info_row(lf, "Auto trading",      "OFF (hardcoded)", RED)
+        _info_row(lf, "Paper mode",        "ON", GREEN)
+        _info_row(lf, "Risk guard",        "ON", GREEN)
+
+        tk.Frame(lf, bg=BORDER, height=1).pack(fill="x", padx=6, pady=6)
+        _section_header(lf, "CURRENT FILTERS")
+        _info_row(lf, "Signal filter",
+            getattr(self, "v_signal_filter", None) and
+            self.v_signal_filter.get() or "All")
+        _info_row(lf, "Category filter",
+            getattr(self, "v_category_filter", None) and
+            self.v_category_filter.get() or "All")
+        _info_row(lf, "Data mode sel.",
+            getattr(self, "v_data_mode", None) and
+            self.v_data_mode.get() or "—")
+        _info_row(lf, "Max trade size",
+            f"${getattr(self, 'v_max_size', None) and self.v_max_size.get() or 0:.0f}")
+        _info_row(lf, "Min edge",
+            f"{getattr(self, 'v_min_edge', None) and self.v_min_edge.get() or 0:.1f}c")
+        _info_row(lf, "Max spread",
+            f"{getattr(self, 'v_max_spread', None) and self.v_max_spread.get() or 0:.1f}c")
+        _info_row(lf, "Crypto source",
+            getattr(self, "v_crypto_src", None) and
+            self.v_crypto_src.get() or "auto")
+
+        tk.Frame(lf, bg=BORDER, height=1).pack(fill="x", padx=6, pady=6)
+        _section_header(lf, "SCANNER STATE")
+        _info_row(lf, "Markets loaded",   str(len(self.signals)))
+        _info_row(lf, "Last source",      self.data_layer._last_source or "—")
+        _info_row(lf, "Last update",      self.data_layer._last_update or "—")
+        _info_row(lf, "Watchlist items",  str(len(self._watchlist.all_entries())))
+        open_trades = len(self._paper_engine.open_trades())
+        _info_row(lf, "Open paper trades",str(open_trades))
+
+        tk.Label(lf,
+            text=("Settings are read-only in maximized view.\n"
+                  "Change settings in the normal left panel."),
+            bg="#1a1a2e", fg=YELLOW, font=FS,
+            padx=10, pady=8, justify="left").pack(fill="x", padx=4, pady=8)
+
+    def _render_max_crypto(self, parent):
+        """Expanded crypto prices panel."""
+        parent.grid_rowconfigure(0, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_columnconfigure(1, weight=1)
+        for col_i, (sym, col) in enumerate([("BTC", ORANGE), ("ETH", "#818cf8")]):
+            card = tk.Frame(parent, bg=PANEL)
+            card.grid(row=0, column=col_i, sticky="nsew", padx=8, pady=8)
+            snap = self._crypto_prices.get(sym)
+            tk.Label(card, text=sym, bg=PANEL, fg=col,
+                font=("Segoe UI", 24, "bold"), pady=16).pack()
+            if snap and snap.price:
+                tk.Label(card, text=snap.price_str,
+                    bg=PANEL, fg=GREEN if snap.status=="ok" else YELLOW,
+                    font=("Consolas", 20, "bold")).pack()
+                for label, val in [
+                    ("Bid",     f"${snap.bid:,.2f}" if snap.bid else "N/A"),
+                    ("Ask",     f"${snap.ask:,.2f}" if snap.ask else "N/A"),
+                    ("Source",  snap.source),
+                    ("Updated", snap.timestamp[11:16] if snap.timestamp else "N/A"),
+                    ("Status",  snap.status),
+                    ("1m chg",  "— (not tracked yet)"),
+                    ("5m chg",  "— (not tracked yet)"),
+                ]:
+                    row = tk.Frame(card, bg=PANEL)
+                    row.pack(fill="x", padx=20, pady=2)
+                    tk.Label(row, text=label, bg=PANEL, fg=MUTED,
+                        font=FS, width=10, anchor="w").pack(side="left")
+                    tk.Label(row, text=val, bg=PANEL, fg=TEXT,
+                        font=FM, anchor="w").pack(side="left")
+            else:
+                tk.Label(card, text="N/A", bg=PANEL, fg=MUTED,
+                    font=("Consolas", 20, "bold")).pack()
+                tk.Label(card, text="Mock/placeholder prices",
+                    bg=PANEL, fg=MUTED, font=FS).pack(pady=8)
+            tk.Button(card, text="↻ Refresh", bg="#0e7490", fg=TEXT,
+                relief="flat", font=FS, padx=12, pady=4,
+                command=self._refresh_crypto).pack(pady=12)
 
     def _on_signal_filter_change(self):
         """Re-populate tree when signal filter changes."""
