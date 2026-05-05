@@ -344,6 +344,177 @@ def _suggest_exit(fair_cents: float, ask_cents: float, signal: str) -> float:
 
 # ── Human-readable explanation builder ────────────────────────────────────
 
+# ── Signal scoring ───────────────────────────────────────────────────────────
+
+SIGNAL_PRIORITY = {
+    "POSSIBLE EDGE": 0,
+    "STRONG ENTRY":  1,
+    "ENTRY":         2,
+    "WATCH":         3,
+    "PAPER ONLY":    4,
+    "CAUTION":       5,
+    "DATA NEEDED":   6,
+    "AVOID":         7,
+    "NO TRADE":      8,
+}
+
+
+def score_market(
+    signal:       str,
+    spread_cents: float,
+    liquidity:    str,
+    bid:          float,
+    ask:          float,
+    fair:         float,
+    volume:       int,
+    extra:        dict = None,   # optional: {"distance_pct": float, "time_left_mins": int}
+) -> dict:
+    """
+    Compute a 0-100 signal score and augmented signal tier.
+
+    Returns:
+        {
+            "score":       int,       # 0 (worst) to 100 (best)
+            "tier":        str,       # upgraded signal label
+            "reasons":     list[str], # human-readable positive reasons
+            "risks":       list[str], # human-readable risk factors
+            "suggested":   str,       # one-line recommended action
+            "data_issues": list[str], # missing data problems
+        }
+
+    Does NOT fabricate edge. Missing fair price → conservative result.
+    """
+    extra       = extra or {}
+    score       = 0
+    reasons     = []
+    risks       = []
+    data_issues = []
+    tier        = signal
+
+    # ── Data availability ──────────────────────────────────────────────
+    if ask <= 0:
+        data_issues.append("Missing ask price — load orderbook first")
+        tier = "DATA NEEDED"
+    if bid <= 0:
+        data_issues.append("Missing bid price")
+    if fair <= 0:
+        data_issues.append("No fair price model — cannot calculate true edge")
+        risks.append("Fair value unavailable — paper/watch only")
+
+    if not data_issues:
+        score += 20
+        reasons.append("Quote available (bid/ask loaded)")
+
+    # ── Spread ─────────────────────────────────────────────────────────
+    if ask > 0 and bid > 0:
+        if spread_cents <= 2:
+            score += 20
+            reasons.append(f"Tight spread ({spread_cents:.1f}c)")
+        elif spread_cents <= 5:
+            score += 10
+            reasons.append(f"Acceptable spread ({spread_cents:.1f}c)")
+        elif spread_cents <= 10:
+            score += 0
+            risks.append(f"Wide spread ({spread_cents:.1f}c)")
+        else:
+            score -= 10
+            risks.append(f"Very wide spread ({spread_cents:.1f}c) — CAUTION")
+            if tier not in ("DATA NEEDED", "AVOID"):
+                tier = "CAUTION"
+
+    # ── Liquidity ──────────────────────────────────────────────────────
+    liq_scores = {"High": 20, "Medium": 10, "Low": 0}
+    liq_score  = liq_scores.get(liquidity, 5)
+    score += liq_score
+    if liquidity == "High":
+        reasons.append("High liquidity")
+    elif liquidity == "Low":
+        risks.append("Low liquidity — fill uncertainty")
+        if tier not in ("DATA NEEDED", "AVOID"):
+            tier = "CAUTION"
+
+    # ── Volume ─────────────────────────────────────────────────────────
+    if volume > 10000:
+        score += 10
+        reasons.append(f"High volume ({volume:,})")
+    elif volume > 1000:
+        score += 5
+    elif volume == 0:
+        data_issues.append("No volume data")
+
+    # ── Crypto reference distance ───────────────────────────────────────
+    dist_pct = extra.get("distance_pct")
+    if dist_pct is not None:
+        abs_dist = abs(dist_pct)
+        if abs_dist <= 1.0:
+            score += 15
+            reasons.append(f"Price very close to target ({dist_pct:+.2f}%)")
+            if tier in ("WATCH",):
+                tier = "PAPER ONLY"
+        elif abs_dist <= 3.0:
+            score += 8
+            reasons.append(f"Price near target ({dist_pct:+.2f}%)")
+        else:
+            risks.append(f"Price far from target ({dist_pct:+.2f}%)")
+
+    # ── Time to expiration ─────────────────────────────────────────────
+    time_left = extra.get("time_left_mins")
+    if time_left is not None:
+        if time_left < 15:
+            score -= 15
+            risks.append(f"Expiring very soon ({time_left}m) — CAUTION")
+            if tier not in ("DATA NEEDED", "AVOID"):
+                tier = "CAUTION"
+        elif time_left < 60:
+            score -= 5
+            risks.append(f"Less than 1 hour to expiration ({time_left}m)")
+        elif time_left > 1440:
+            score += 5
+            reasons.append(f"Plenty of time remaining ({time_left//60}h)")
+
+    # ── Fair price edge ────────────────────────────────────────────────
+    if fair > 0 and ask > 0:
+        edge = fair - ask
+        if edge >= 12:
+            score += 20
+            tier = "POSSIBLE EDGE"
+            reasons.append(f"Strong edge: {edge:+.1f}c above fair value")
+        elif edge >= 8:
+            score += 15
+            reasons.append(f"Edge: {edge:+.1f}c above fair value")
+        elif edge >= 3:
+            score += 8
+            reasons.append(f"Positive edge: {edge:+.1f}c")
+        elif edge < 0:
+            score -= 10
+            risks.append(f"Negative edge ({edge:+.1f}c) — market overpriced")
+
+    score = max(0, min(100, score))
+
+    # ── Suggested action ───────────────────────────────────────────────
+    if tier == "POSSIBLE EDGE":
+        suggested = "Consider paper trade — edge present if fair model is correct"
+    elif tier in ("WATCH", "PAPER ONLY"):
+        suggested = "Add to watchlist — monitor for better entry or confirmation"
+    elif tier == "CAUTION":
+        suggested = "Wait — spread/liquidity/timing unfavorable"
+    elif tier == "DATA NEEDED":
+        suggested = "Load orderbook and enable fair price model first"
+    elif tier == "AVOID":
+        suggested = "Market appears overpriced — skip"
+    else:
+        suggested = "Monitor only"
+
+    return {
+        "score":       score,
+        "tier":        tier,
+        "reasons":     reasons,
+        "risks":       risks,
+        "suggested":   suggested,
+        "data_issues": data_issues,
+    }
+
+
 def build_trade_plan(
     raw:          dict,
     signal:       str,

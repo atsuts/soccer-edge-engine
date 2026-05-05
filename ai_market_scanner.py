@@ -370,6 +370,17 @@ class AIMarketScannerFrame(tk.Frame):
             activebackground="#0e7490", relief="flat", font=FS,
             pady=4, command=self._refresh_crypto).pack(fill="x", padx=8, pady=4)
 
+        # Signal filter
+        tk.Frame(body, bg=BORDER, height=1).pack(fill="x", padx=8, pady=4)
+        tk.Label(body, text="SIGNAL FILTER", bg=PANEL, fg=CYAN,
+            font=FB, anchor="w").pack(fill="x", padx=8, pady=2)
+        self.v_signal_filter = tk.StringVar(value="All")
+        for label in ["All", "Watch+", "Possible Edge", "Data Needed", "Avoid"]:
+            tk.Radiobutton(body, text=label, variable=self.v_signal_filter,
+                value=label, bg=PANEL, fg=TEXT, selectcolor=PANEL_DARK,
+                activebackground=PANEL, font=FS,
+                command=self._on_signal_filter_change).pack(anchor="w", padx=16)
+
     def _update_status_box(self):
         try:
             st = self.data_layer.status()
@@ -540,9 +551,10 @@ class AIMarketScannerFrame(tk.Frame):
 
         # Watchlist treeview
         wl_cols = ("Market","Side","Bid","Ask","Last","Signal",
-                   "Expiry","Target","Ref Price","Status")
+                   "Spread","Target","Ref Price","Status","Updated")
         col_w   = {"Market":130,"Side":40,"Bid":40,"Ask":40,"Last":40,
-                   "Signal":90,"Expiry":80,"Target":65,"Ref Price":80,"Status":55}
+                   "Signal":90,"Spread":50,"Target":65,"Ref Price":80,
+                   "Status":55,"Updated":55}
 
         wf = tk.Frame(p, bg=PANEL_DARK)
         wf.pack(fill="both", expand=True, padx=4, pady=2)
@@ -805,11 +817,61 @@ class AIMarketScannerFrame(tk.Frame):
 
         # ── 7. Why / Explanation ──────────────────────────────────────
         f7 = _section("7  WHY / EXPLANATION")
-        reason_text = sig.reason or "No explanation available."
-        tk.Label(f7, text=reason_text,
-            bg=PANEL_DARK, fg=MUTED, font=FS,
-            padx=8, pady=6, justify="left",
-            wraplength=260, anchor="w").pack(fill="x")
+        try:
+            from market_scanner_engine import score_market
+            from crypto_price_connectors import parse_crypto_market_title
+            ctx   = parse_crypto_market_title(sig.market_name)
+            extra = {}
+            if ctx.asset != "UNKNOWN":
+                snap = self._crypto_prices.get(ctx.asset)
+                if snap and snap.price and ctx.target_price:
+                    dist_pct = (snap.price - ctx.target_price) / ctx.target_price * 100
+                    extra["distance_pct"] = dist_pct
+
+            scored = score_market(
+                signal       = sig.signal,
+                spread_cents = sig.spread or 0,
+                liquidity    = sig.liquidity,
+                bid          = sig.bid_price or 0,
+                ask          = sig.ask_price or 0,
+                fair         = sig.fair_price or 0,
+                volume       = sig.volume or 0,
+                extra        = extra,
+            )
+            # Score bar
+            bar_frame = tk.Frame(f7, bg=PANEL_DARK)
+            bar_frame.pack(fill="x", padx=6, pady=4)
+            score_col = GREEN if scored["score"] >= 60 else YELLOW if scored["score"] >= 30 else RED
+            tk.Label(bar_frame, text=f"Score: {scored['score']}/100",
+                bg=PANEL_DARK, fg=score_col, font=FB, anchor="w").pack(side="left")
+            tk.Label(bar_frame, text=f"  Tier: {scored['tier']}",
+                bg=PANEL_DARK, fg=CYAN, font=FM, anchor="w").pack(side="left")
+
+            def _reason_block(title, items, col):
+                if not items: return
+                tk.Label(f7, text=title, bg=PANEL_DARK, fg=col,
+                    font=("Segoe UI", 8, "bold"), padx=6, pady=2,
+                    anchor="w").pack(fill="x")
+                for item in items:
+                    tk.Label(f7, text=f"  • {item}", bg=PANEL_DARK, fg=MUTED,
+                        font=FS, padx=8, anchor="w",
+                        wraplength=255).pack(fill="x")
+
+            _reason_block("Reasons:",      scored["reasons"],     GREEN)
+            _reason_block("Risks:",        scored["risks"],       YELLOW)
+            _reason_block("Data issues:",  scored["data_issues"], RED)
+
+            tk.Label(f7, text=f"→  {scored['suggested']}",
+                bg=PANEL_DARK, fg=CYAN, font=FS,
+                padx=8, pady=4, anchor="w",
+                wraplength=255).pack(fill="x")
+
+        except Exception as _exc:
+            reason_text = sig.reason or "No explanation available."
+            tk.Label(f7, text=reason_text,
+                bg=PANEL_DARK, fg=MUTED, font=FS,
+                padx=8, pady=6, justify="left",
+                wraplength=260, anchor="w").pack(fill="x")
 
         if not cfg.ENABLE_FAIR_PRICE_MODEL:
             tk.Label(f7,
@@ -1030,9 +1092,12 @@ class AIMarketScannerFrame(tk.Frame):
             self._update_pt_tree()
             self._update_performance()
 
-            # Update watchlist from live signal data
+            # Update watchlist from live signal data (returns alert messages)
             self._watchlist.update_from_signals(self.signals)
             self._refresh_wl_tree()
+            # Route any watchlist alerts to Scanner Messages
+            for alert_msg in self._watchlist.get_alert_messages():
+                self._safe_log(alert_msg)
 
             # Refresh crypto reference in background
             self._refresh_crypto()
@@ -1043,10 +1108,11 @@ class AIMarketScannerFrame(tk.Frame):
 
     def _populate_tree(self):
         self.tree.delete(*self.tree.get_children())
-        if not self.signals:
+        signals = self._filtered_signals()
+        if not signals:
             return
         data_src = self.data_layer._last_source or "mock"
-        for sig in self.signals:
+        for sig in signals:
             tag = sig.signal.replace(" ", "_")
             # MarketSignal stores prices in CENTS (0-100) — use format_cents()
             # format_price() is for dollar floats (0.0-1.0) from MarketSnapshot only
@@ -1180,14 +1246,29 @@ class AIMarketScannerFrame(tk.Frame):
             self.wl_tree.delete(*self.wl_tree.get_children())
             entries = self._watchlist.all_entries()
             for e in entries:
-                tag = "stale" if e.status in ("STALE","EXPIRED") else "active"
-                ref_str = f"${e.reference_price:,.0f}" if e.reference_price else "N/A"
+                # Color tags by status
+                if e.avoided or e.status == "AVOID":
+                    tag = "avoid"
+                elif e.status == "ALERT":
+                    tag = "alert"
+                elif e.status in ("STALE", "EXPIRED"):
+                    tag = "stale"
+                else:
+                    tag = "active"
+                ref_str  = f"${e.reference_price:,.0f}" if e.reference_price else "N/A"
+                spread_s = f"{e.spread:.0f}c" if e.spread else "N/A"
+                seen_s   = e.last_seen[11:16] if e.last_seen else "N/A"
                 self.wl_tree.insert("", "end", iid=e.ticker, values=(
                     e.title[:22], e.side,
                     e.bid_str, e.ask_str, e.last_str,
-                    e.signal, e.expiration or "N/A",
-                    e.target_str, ref_str, e.status,
+                    e.signal, spread_s,
+                    e.target_str, ref_str, e.status, seen_s,
                 ), tags=(tag,))
+            # Configure tag colors
+            self.wl_tree.tag_configure("stale",  foreground=MUTED)
+            self.wl_tree.tag_configure("active", foreground=GREEN)
+            self.wl_tree.tag_configure("alert",  foreground=YELLOW)
+            self.wl_tree.tag_configure("avoid",  foreground=RED)
             if hasattr(self, '_wl_count_lbl'):
                 self._wl_count_lbl.config(
                     text=f"{len(entries)} item{'s' if len(entries) != 1 else ''}")
@@ -1197,6 +1278,22 @@ class AIMarketScannerFrame(tk.Frame):
 
 
     def _mark_avoid(self, sig):
+        """Mark selected market as avoid. Saves to watchlist."""
+        if not self._watchlist.contains(sig.market_id):
+            from scanner_watchlist import WatchlistEntry
+            from datetime import datetime
+            e = WatchlistEntry(
+                ticker=sig.market_id, title=sig.market_name,
+                side=sig.side, signal="AVOID",
+                bid=sig.bid_price or None, ask=sig.ask_price or None,
+                last=sig.last_price or None,
+                category=sig.category, source="kalshi",
+                time_added=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                avoided=True, status="AVOID", alert_note="User marked avoid")
+            self._watchlist.add(e)
+        else:
+            self._watchlist.mark_avoided(sig.market_id, "User marked avoid")
+        self._refresh_wl_tree()
         self._safe_log(f"Marked AVOID: {sig.market_name}")
 
     def _export_signal(self, sig):
@@ -1539,6 +1636,25 @@ class AIMarketScannerFrame(tk.Frame):
             print(f"[perf] {e}")
 
     # ── Source change handler ──────────────────────────────────────────────
+
+    def _on_signal_filter_change(self):
+        """Re-populate tree when signal filter changes."""
+        self._populate_tree()
+
+    def _filtered_signals(self):
+        """Return signals filtered by the signal filter dropdown."""
+        f = self.v_signal_filter.get() if hasattr(self, 'v_signal_filter') else "All"
+        if f == "All":
+            return self.signals
+        WATCH_PLUS  = {"WATCH","PAPER ONLY","POSSIBLE EDGE","ENTRY","STRONG ENTRY"}
+        POSS_EDGE   = {"POSSIBLE EDGE","ENTRY","STRONG ENTRY"}
+        DATA_NEEDED = {"DATA NEEDED"}
+        AVOID       = {"AVOID","NO TRADE"}
+        if f == "Watch+":       return [s for s in self.signals if s.signal in WATCH_PLUS]
+        if f == "Possible Edge":return [s for s in self.signals if s.signal in POSS_EDGE]
+        if f == "Data Needed":  return [s for s in self.signals if s.signal in DATA_NEEDED]
+        if f == "Avoid":        return [s for s in self.signals if s.signal in AVOID]
+        return self.signals
 
     def _safe_log(self, msg: str):
         """Log safely — buffers if widget not built yet."""
