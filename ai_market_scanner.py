@@ -758,17 +758,28 @@ class AIMarketScannerFrame(tk.Frame):
         ask = sig.ask_price or 0
         if ask > 0:
             from paper_trade_engine import contracts_for_budget, kalshi_fee, breakeven_price
-            max_size = self.v_max_size.get()
-            n      = contracts_for_budget(max_size, ask)
-            fee    = kalshi_fee(max(n,1), ask)
-            be     = breakeven_price(ask, max(n,1))
-            _row(f4, "Entry ask",  format_cents(ask))
-            _row(f4, "Contracts",  str(n))
-            _row(f4, "Buy fee",    f"{fee:.0f}c")
-            _row(f4, "Breakeven",  f"{be:.1f}c")
-            _row(f4, "Max risk",   f"${max_size:.0f}")
+            max_size     = self.v_max_size.get()
+            n            = contracts_for_budget(max_size, ask)
+            fee_c        = kalshi_fee(max(n, 1), ask)
+            be_c         = breakeven_price(ask, max(n, 1))
+            total_cost_c = ask * max(n, 1) + fee_c
+            payout_c     = 100 * max(n, 1)
+            max_profit_d = round((payout_c - total_cost_c) / 100, 4)
+            _row(f4, "Side",        sig.side, CYAN)
+            _row(f4, "Entry ask",   format_cents(ask))
+            _row(f4, "Contracts",   str(n))
+            _row(f4, "Buy fee",     f"{fee_c:.0f}c  (Kalshi 7% formula)")
+            _row(f4, "Total cost",  f"${round(total_cost_c/100, 4):.4f}")
+            _row(f4, "Payout",      f"${round(payout_c/100, 4):.4f}  (if 100c)")
+            _row(f4, "Max profit",  f"${max_profit_d:+.4f}",
+                 GREEN if max_profit_d > 0 else RED)
+            _row(f4, "Breakeven",   f"{be_c:.1f}c")
+            _row(f4, "Max risk",    f"${max_size:.0f}  (budget)")
+            if sig.spread and sig.spread > 10:
+                _row(f4, "⚠ Spread", format_cents(sig.spread) + " — wide", YELLOW)
         else:
-            _row(f4, "Status", "Load Orderbook to see prices", YELLOW)
+            _row(f4, "Status", "Load Orderbook first to get ask price", YELLOW)
+            _row(f4, "Note",   "Fee formula: 7% × n × p × (1-p) × 100", MUTED)
 
         # ── 6. Signal / Trade Plan ────────────────────────────────────
         f5 = _section("6  SIGNAL")
@@ -1549,15 +1560,4 @@ class AIMarketScannerFrame(tk.Frame):
     def _clear(self, widget):
         for w in widget.winfo_children():
             w.destroy()
-
-    def _write_log(self, msg: str):
-        try:
-            ts = datetime.now().strftime("%H:%M:%S")
-            self._log_text.configure(state="normal")
-            self._log_text.insert("end", f"[{ts}] {msg}\n")
-            self._log_text.see("end")
-            self._log_text.configure(state="disabled")
-        except Exception:
-            pass
-
 
