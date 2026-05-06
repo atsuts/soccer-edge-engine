@@ -946,7 +946,7 @@ class AIMarketScannerFrame(tk.Frame):
         f7 = _section("7  WHY / EXPLANATION")
         try:
             from market_scanner_engine import score_market
-            from crypto_price_connectors import parse_crypto_market_title
+            # parse_crypto_market_title is already imported at module level
             ctx   = parse_crypto_market_title(sig.market_name)
             extra = {}
             if ctx.asset != "UNKNOWN":
@@ -1147,15 +1147,31 @@ class AIMarketScannerFrame(tk.Frame):
         pt_body = _card(0, "PAPER TRADES",   panel_key="paper_trades")
         lf = tk.Frame(pt_body, bg=PANEL_DARK)
         lf.grid(row=0, column=0, sticky="nsew")
-        lf.grid_rowconfigure(0, weight=1)
+        lf.grid_rowconfigure(1, weight=1)
         lf.grid_columnconfigure(0, weight=1)
 
-        pt_cols = ("Time","Market","Side","Entry","Contr","Fee",
-                   "Target","Current","P/L","Status")
+        # Quick export button in card header
+        pt_btns = tk.Frame(lf, bg=PANEL_DARK)
+        pt_btns.grid(row=0, column=0, columnspan=2, sticky="ew", padx=2, pady=1)
+        def _quick_export():
+            try:
+                path = self._paper_engine.export_csv()
+                if path:
+                    self._safe_log(f"Trades exported → {path}")
+            except Exception as _xe:
+                self._safe_log(f"Export error: {_xe}")
+        tk.Button(pt_btns, text="Export CSV", bg=PANEL, fg=CYAN,
+            relief="flat", font=("Segoe UI",7), padx=4, pady=1,
+            command=_quick_export).pack(side="right", padx=2)
+        tk.Button(pt_btns, text="Close Selected", bg=PANEL, fg=CYAN,
+            relief="flat", font=("Segoe UI",7), padx=4, pady=1,
+            command=self._exit_selected_paper_trade).pack(side="right", padx=2)
+
+        pt_cols = ("Time","Market","Side","Entry","Exit","Current","Contr","Fee","P/L","Status")
         self.pt_tree = ttk.Treeview(lf, columns=pt_cols,
             show="headings", style="Scanner.Treeview", height=5)
-        pt_w = {"Time":58,"Market":120,"Side":36,"Entry":40,"Contr":38,
-                "Fee":36,"Target":46,"Current":50,"P/L":50,"Status":50}
+        pt_w = {"Time":58,"Market":120,"Side":36,"Entry":40,"Exit":40,
+                "Current":46,"Contr":38,"Fee":36,"P/L":52,"Status":50}
         for col in pt_cols:
             self.pt_tree.heading(col, text=col)
             self.pt_tree.column(col, width=pt_w.get(col, 50),
@@ -1392,7 +1408,7 @@ class AIMarketScannerFrame(tk.Frame):
 
     def _add_watchlist(self, sig):
         """Add selected signal to the AI Scanner watchlist."""
-        from crypto_price_connectors import parse_crypto_market_title
+        # parse_crypto_market_title imported at module level
         ctx = parse_crypto_market_title(sig.market_name)
         btc_snap = self._crypto_prices.get("BTC")
         ref_price = btc_snap.price if (ctx.asset == "BTC" and btc_snap) else None
@@ -1787,41 +1803,85 @@ class AIMarketScannerFrame(tk.Frame):
             self._update_performance()
 
     def _exit_selected_paper_trade(self):
-        """Exit the selected paper trade at current bid."""
+        """
+        Close the selected paper trade at current bid price.
+        Tries live market bid first, falls back to last known price.
+        No real orders placed.
+        """
         if not self._selected_trade:
-            self._safe_log("Select a paper trade row first to exit it.")
+            self._safe_log("Select a paper trade row first to close it.")
             return
         trade_id = self._selected_trade
-        # Find the trade and use current bid as exit price
         trade = self._paper_engine._find(trade_id)
         if trade is None:
+            self._safe_log(f"Paper trade {trade_id} not found.")
             return
-        exit_price = trade.current_price   # use last known price as exit
-        self._paper_engine.exit_trade(trade_id, exit_price, reason="Manual exit")
+        if trade.status != "OPEN":
+            self._safe_log(f"Paper trade {trade_id} is already {trade.status}.")
+            return
+
+        # Try to get live current bid from loaded signals
+        live_bid = None
+        for sig in self.signals:
+            if sig.market_id == trade.ticker:
+                live_bid = sig.bid_price or None
+                break
+
+        if live_bid and live_bid > 0:
+            exit_price = live_bid
+            self._safe_log(
+                f"Closing {trade.ticker} at live bid {exit_price:.0f}c. "
+                f"NO REAL ORDER PLACED.")
+        elif trade.current_price and trade.current_price > 0:
+            exit_price = trade.current_price
+            self._safe_log(
+                f"Closing {trade.ticker} at last known price {exit_price:.0f}c "
+                f"(no live bid found). NO REAL ORDER PLACED.")
+        else:
+            self._safe_log(
+                f"Cannot close paper trade {trade_id}: "
+                f"current price unavailable. Load orderbook first.")
+            return
+
+        closed = self._paper_engine.exit_trade(
+            trade_id, exit_price, reason="Manual close")
+        if closed:
+            self._safe_log(
+                f"Paper trade closed: {closed.ticker} {closed.side} "
+                f"P/L {closed.pl_str}  — LOCAL ONLY, NO REAL ORDER.")
         self._update_pt_tree()
         self._update_performance()
 
     def _update_pt_tree(self):
-        """Refresh paper trade log from engine."""
+        """Refresh paper trade log from engine. Shows OPEN trades in compact card."""
         try:
             self.pt_tree.delete(*self.pt_tree.get_children())
             for t in reversed(self._paper_engine.all_trades()):
-                pl = t.pl_str
-                pl_col = "win" if "+" in pl else "loss" if "-" in pl else "neutral"
-                # Short display name: prefer title truncated, fall back to ticker
-            display_name = (t.title[:22] if t.title else t.ticker[:22])
-            self.pt_tree.insert("", "end", iid=t.trade_id, values=(
+                pl_str = t.pl_str
+                # Color tags
+                if t.status == "CLOSED":
+                    tag = "closed_win" if "$+" in pl_str else "closed_loss"
+                else:
+                    tag = "open"
+                display_name = t.title[:22] if t.title else t.ticker[:22]
+                exit_s = f"{t.exit_price:.0f}c" if t.exit_price else "—"
+                cur_s  = f"{t.current_price:.0f}c" if t.current_price else "N/A"
+                self.pt_tree.insert("", "end", iid=t.trade_id, values=(
                     t.time_opened[11:19],
                     display_name,
                     t.side,
                     f"{t.entry_price:.0f}c",
+                    exit_s,
+                    cur_s,
                     str(t.contracts),
                     f"{t.buy_fee:.0f}c",
-                    f"{t.target_exit:.0f}c",
-                    f"{t.current_price:.0f}c",
-                    pl,
+                    pl_str,
                     t.status,
-                ))
+                ), tags=(tag,))
+            # Color tags
+            self.pt_tree.tag_configure("open",        foreground=TEXT)
+            self.pt_tree.tag_configure("closed_win",  foreground=GREEN)
+            self.pt_tree.tag_configure("closed_loss", foreground=RED)
             self.pt_tree.bind("<<TreeviewSelect>>", self._on_pt_select)
         except Exception as e:
             print(f"[pt_tree] {e}")
@@ -2157,22 +2217,66 @@ class AIMarketScannerFrame(tk.Frame):
             ), tags=(tag,))
 
     def _render_max_paper_trades(self, parent):
-        """Expanded paper trades log."""
+        """Expanded paper trades log with filter, close, and export."""
         from tkinter import ttk
         parent.grid_rowconfigure(1, weight=1)
         parent.grid_columnconfigure(0, weight=1)
+
+        # Toolbar
         tb = tk.Frame(parent, bg=TOP)
         tb.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
         trades = self._paper_engine.all_trades()
+
+        # Filter var
+        _filter_var = tk.StringVar(value="All")
+
+        def _apply_filter():
+            fv = _filter_var.get()
+            return [t for t in trades if fv == "All" or t.status == fv]
+
+        def _export_trades():
+            try:
+                path = self._paper_engine.export_csv()
+                if path:
+                    self._safe_log(f"Paper trades exported → {path}")
+                else:
+                    self._safe_log("Export failed — check terminal.")
+            except Exception as exc:
+                self._safe_log(f"Export error: {exc}")
+
+        def _export_perf():
+            try:
+                path = self._paper_engine.export_performance_csv()
+                if path:
+                    self._safe_log(f"Performance exported → {path}")
+            except Exception as exc:
+                self._safe_log(f"Perf export error: {exc}")
+
         tk.Label(tb, text=f"{len(trades)} trades",
             bg=TOP, fg=MUTED, font=FS).pack(side="left", padx=8)
-        tk.Button(tb, text="Exit Selected", bg="#0e7490", fg=TEXT,
+
+        # Filter radio buttons
+        for label in ["All", "OPEN", "CLOSED"]:
+            tk.Radiobutton(tb, text=label, variable=_filter_var,
+                value=label, bg=TOP, fg=TEXT, selectcolor=TOP,
+                activebackground=TOP, font=FS,
+                command=lambda: _rebuild_tree(_apply_filter())
+            ).pack(side="left", padx=3)
+
+        tk.Button(tb, text="Close Selected", bg="#0e7490", fg=TEXT,
             relief="flat", font=FS, padx=8,
             command=self._exit_selected_paper_trade).pack(side="right", padx=4)
-        cols = ("Opened","Market","Side","Entry","Current","Contracts",
-                "Unreal. P/L","Real. P/L","Status","Notes")
-        col_w = {"Opened":70,"Market":160,"Side":38,"Entry":45,"Current":50,
-                 "Contracts":55,"Unreal. P/L":70,"Real. P/L":70,"Status":55,"Notes":80}
+        tk.Button(tb, text="Export CSV", bg=PANEL, fg=CYAN,
+            relief="flat", font=FS, padx=8,
+            command=_export_trades).pack(side="right", padx=2)
+        tk.Button(tb, text="Export Perf", bg=PANEL, fg=CYAN,
+            relief="flat", font=FS, padx=8,
+            command=_export_perf).pack(side="right", padx=2)
+        cols = ("Opened","Closed","Market","Side","Entry","Exit",
+                "Current","Contracts","Real P/L","Unreal P/L","Status","Notes")
+        col_w = {"Opened":70,"Closed":70,"Market":160,"Side":38,"Entry":42,
+                 "Exit":42,"Current":48,"Contracts":50,
+                 "Real P/L":70,"Unreal P/L":70,"Status":55,"Notes":80}
         tf = tk.Frame(parent, bg=PANEL)
         tf.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
         tf.grid_rowconfigure(0, weight=1)
@@ -2183,23 +2287,46 @@ class AIMarketScannerFrame(tk.Frame):
             tree.heading(col, text=col)
             tree.column(col, width=col_w.get(col,60), anchor="center", stretch=False)
         tree.column("Market", anchor="w", stretch=True)
+        tree.tag_configure("open",        foreground=TEXT)
+        tree.tag_configure("closed_win",  foreground=GREEN)
+        tree.tag_configure("closed_loss", foreground=RED)
         vsb = ttk.Scrollbar(tf, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
         tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         self._max_pt_tree = tree
-        self._on_pt_select_ref = lambda _e: setattr(
-            self, '_selected_trade',
-            (tree.selection() or [None])[0])
-        tree.bind("<<TreeviewSelect>>", self._on_pt_select_ref)
-        for t in reversed(trades):
-            unreal = t.pl_str if t.status == "OPEN" else "—"
-            real   = t.pl_str if t.status == "CLOSED" else "—"
-            tree.insert("", "end", iid=t.trade_id+"_max", values=(
-                t.time_opened[5:16], t.title[:25], t.side,
-                f"{t.entry_price:.0f}c", f"{t.current_price:.0f}c",
-                str(t.contracts), unreal, real, t.status, t.notes[:20],
-            ))
+
+        def _rebuild_tree(filtered_trades):
+            tree.delete(*tree.get_children())
+            for t in reversed(filtered_trades):
+                unreal = f"${t.unrealized_pl_dollars:+.4f}" if t.status == "OPEN"    else "—"
+                real   = f"${t.realized_pl_dollars:+.4f}"   if t.status == "CLOSED"  else "—"
+                exit_s = f"{t.exit_price:.0f}c" if t.exit_price else "—"
+                tag    = "open" if t.status == "OPEN" else (
+                         "closed_win" if (t.realized_pl_dollars or 0) > 0 else "closed_loss")
+                iid = t.trade_id + "_max"
+                tree.insert("", "end", iid=iid, values=(
+                    t.time_opened[5:16],
+                    t.time_closed[5:16] if t.time_closed else "—",
+                    t.title[:25] if t.title else t.ticker[:25],
+                    t.side,
+                    f"{t.entry_price:.0f}c",
+                    exit_s,
+                    f"{t.current_price:.0f}c",
+                    str(t.contracts),
+                    real, unreal, t.status,
+                    (t.notes or "")[:20],
+                ), tags=(tag,))
+
+        def _on_tree_select(_e=None):
+            sel = tree.selection()
+            if sel:
+                # Strip _max suffix to get real trade_id
+                raw = sel[0]
+                self._selected_trade = raw[:-4] if raw.endswith("_max") else raw
+
+        tree.bind("<<TreeviewSelect>>", _on_tree_select)
+        _rebuild_tree(trades)   # initial populate
 
     def _render_max_messages(self, parent):
         """Expanded scanner messages log."""
@@ -2236,11 +2363,29 @@ class AIMarketScannerFrame(tk.Frame):
             pass
 
     def _render_max_performance(self, parent):
-        """Expanded performance panel."""
-        parent.grid_rowconfigure(0, weight=1)
+        """Expanded performance panel with export button."""
+        parent.grid_rowconfigure(0, weight=0)
+        parent.grid_rowconfigure(1, weight=1)
         parent.grid_columnconfigure(0, weight=1)
+
+        # Toolbar
+        tb = tk.Frame(parent, bg=TOP)
+        tb.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
+        def _export_perf():
+            try:
+                path = self._paper_engine.export_performance_csv()
+                if path:
+                    self._safe_log(f"Performance exported → {path}")
+                else:
+                    self._safe_log("Performance export failed.")
+            except Exception as exc:
+                self._safe_log(f"Export error: {exc}")
+        tk.Button(tb, text="Export Performance CSV", bg=PANEL, fg=CYAN,
+            relief="flat", font=FS, padx=10, pady=4,
+            command=_export_perf).pack(side="right", padx=4)
+
         pf = tk.Frame(parent, bg=PANEL)
-        pf.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        pf.grid(row=1, column=0, sticky="nsew", padx=8, pady=8)
         try:
             perf = self._paper_engine.performance_summary()
             stats = [

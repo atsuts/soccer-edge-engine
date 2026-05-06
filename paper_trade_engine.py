@@ -241,6 +241,11 @@ class PaperTradeEngine:
             f"Paper trade closed: {trade.ticker} {trade.side} "
             f"exit {exit_cents:.0f}c → P/L {pl:+.4f}  NO REAL ORDER."
         )
+        # Save performance snapshot after each close
+        try:
+            self.save_performance_snapshot()
+        except Exception:
+            pass
         return trade
 
     # ── Avoid ──────────────────────────────────────────────────────────────
@@ -297,6 +302,103 @@ class PaperTradeEngine:
             "best_trade":  best.pl_str  if best  else "—",
             "worst_trade": worst.pl_str if worst else "—",
         }
+
+    # ── Export ──────────────────────────────────────────────────────────────
+
+    def export_csv(self, export_dir: str = "exports") -> str:
+        """
+        Export all paper trades to CSV in exports/ folder.
+        Returns the file path written. Creates folder if missing.
+        No API keys or secrets are included.
+        """
+        import csv
+        from pathlib import Path
+        out_dir = Path(export_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out = out_dir / f"paper_trades_{ts}.csv"
+        fieldnames = [
+            "trade_id","ticker","title","side",
+            "entry_price","exit_price","current_price","contracts",
+            "opened_at","closed_at","buy_fee","sell_fee",
+            "realized_pnl","unrealized_pnl","status","notes",
+        ]
+        try:
+            with open(out, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for t in self._trades:
+                    writer.writerow({
+                        "trade_id":      t.trade_id,
+                        "ticker":        t.ticker,
+                        "title":         t.title,
+                        "side":          t.side,
+                        "entry_price":   f"{t.entry_price:.1f}c",
+                        "exit_price":    f"{t.exit_price:.1f}c"     if t.exit_price  else "N/A",
+                        "current_price": f"{t.current_price:.1f}c",
+                        "contracts":     t.contracts,
+                        "opened_at":     t.time_opened,
+                        "closed_at":     t.time_closed or "N/A",
+                        "buy_fee":       f"{t.buy_fee:.1f}c",
+                        "sell_fee":      f"{t.sell_fee:.1f}c"       if t.sell_fee    else "N/A",
+                        "realized_pnl":  t.pl_str                   if t.status == "CLOSED" else "N/A",
+                        "unrealized_pnl":f"${t.unrealized_pl_dollars:+.4f}" if t.status == "OPEN" else "N/A",
+                        "status":        t.status,
+                        "notes":         t.notes,
+                    })
+            self._log(f"Exported {len(self._trades)} trades → {out}")
+            return str(out)
+        except Exception as e:
+            self._log(f"Export error: {e}")
+            return ""
+
+    def export_performance_csv(self, export_dir: str = "exports") -> str:
+        """
+        Export performance summary to CSV.
+        Returns file path. No API keys included.
+        """
+        import csv
+        from pathlib import Path
+        out_dir = Path(export_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out = out_dir / f"performance_{ts}.csv"
+        perf = self.performance_summary()
+        try:
+            with open(out, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Metric", "Value"])
+                for k, v in perf.items():
+                    writer.writerow([k, v])
+                writer.writerow(["exported_at", datetime.now().isoformat()])
+            self._log(f"Performance exported → {out}")
+            return str(out)
+        except Exception as e:
+            self._log(f"Performance export error: {e}")
+            return ""
+
+    def save_performance_snapshot(self) -> None:
+        """Append a performance snapshot to performance_history.json."""
+        import json
+        try:
+            hist_path = PAPER_DIR / "performance_history.json"
+            perf      = self.performance_summary()
+            perf["snapshot_at"] = datetime.now().isoformat()
+            history = []
+            if hist_path.exists():
+                try:
+                    with open(hist_path, "r", encoding="utf-8") as f:
+                        history = json.load(f)
+                except Exception:
+                    history = []
+            history.append(perf)
+            # Keep last 200 snapshots
+            if len(history) > 200:
+                history = history[-200:]
+            with open(hist_path, "w", encoding="utf-8") as f:
+                json.dump(history, f, indent=2, default=str)
+        except Exception as e:
+            self._log(f"Performance snapshot error: {e}")
 
     # ── Persistence ─────────────────────────────────────────────────────────
 
