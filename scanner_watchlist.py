@@ -41,6 +41,13 @@ class WatchlistEntry:
     last_alert_msg:  str            = ""
     score:           int             = 0
     alert_threshold_ask:  Optional[float] = None  # trigger alert when ask ≤ this
+    # Per-market targets (Part B)
+    target_yes_price:     Optional[float] = None  # cents — alert when YES ask ≤ this
+    target_no_price:      Optional[float] = None  # cents — alert when NO ask ≤ this
+    min_edge_cents:       Optional[float] = None  # alert when edge ≥ this
+    max_spread_cents:     Optional[float] = None  # alert when spread ≤ this
+    alert_when_signal:    Optional[str]   = None  # e.g. "POSSIBLE EDGE"
+    user_note:            str             = ""     # plain-text user note
 
     @property
     def bid_str(self) -> str:
@@ -196,6 +203,16 @@ class ScannerWatchlist:
             if entry.last_alert_msg:
                 msgs.append(entry.last_alert_msg)
         return msgs
+
+    def save_note(self, ticker: str, note: str) -> bool:
+        """Save a user note for a watched market."""
+        entry = self.get(ticker)
+        if not entry:
+            return False
+        entry.user_note = note[:500]   # cap at 500 chars
+        self._save()
+        self._log(f"Note saved for {ticker}")
+        return True
 
     def mark_avoided(self, ticker: str, reason: str = "") -> bool:
         """Mark a market as user-avoided."""

@@ -344,6 +344,250 @@ def _suggest_exit(fair_cents: float, ask_cents: float, signal: str) -> float:
 
 # ── Human-readable explanation builder ────────────────────────────────────
 
+# ── Market type classifier ───────────────────────────────────────────────────
+
+def classify_market_type(
+    market_name: str = "",
+    ticker:      str = "",
+    category:    str = "",
+    raw_data:    dict = None,
+) -> dict:
+    """
+    Classify what kind of Kalshi market this is from title/ticker/category.
+
+    Returns:
+        {
+            "market_type":    str,   # CRYPTO_PRICE | SPORTS | ECONOMIC | WEATHER |
+                                     # POLITICS | FINANCIAL_INDEX | COMPANY | OTHER | UNKNOWN
+            "category":       str,
+            "asset":          Optional[str],   # BTC / ETH / SPX / etc.
+            "direction":      Optional[str],   # ABOVE / BELOW / UNKNOWN
+            "threshold":      Optional[float],
+            "unit":           Optional[str],   # USD / DEGREES / etc.
+            "time_window":    Optional[str],   # deadline phrase
+            "confidence":     str,  # HIGH / MEDIUM / LOW
+            "parser_status":  str,  # PARSED / PARTIAL / UNKNOWN
+            "reasons":        list[str],
+            "missing_inputs": list[str],
+        }
+
+    Conservative — never forces a classification it isn't sure of.
+    """
+    import re
+    reasons  = []
+    missing  = []
+    name_up  = (market_name or "").upper()
+    tick_up  = (ticker or "").upper()
+    cat_low  = (category or "").lower()
+    combined = f"{name_up} {tick_up}"
+
+    # ── Crypto ─────────────────────────────────────────────────────────
+    CRYPTO_KW = {"BTC","BITCOIN","ETH","ETHEREUM","CRYPTO","SOLANA","SOL",
+                 "DOGE","XRP","USDT","USDC"}
+    if any(k in combined for k in CRYPTO_KW) or "crypto" in cat_low:
+        # Delegate detailed parsing to parse_crypto_market_title
+        try:
+            from crypto_price_connectors import parse_crypto_market_title
+            ctx = parse_crypto_market_title(market_name)
+            reasons.append(f"Crypto asset: {ctx.asset}")
+            return {
+                "market_type":   "CRYPTO_PRICE",
+                "category":      category or "Crypto",
+                "asset":         ctx.asset if ctx.asset != "UNKNOWN" else None,
+                "direction":     ctx.condition if ctx.condition != "UNKNOWN" else None,
+                "threshold":     ctx.target_price,
+                "unit":          "USD" if ctx.target_price else None,
+                "time_window":   ctx.expiration_text,
+                "confidence":    "HIGH" if ctx.target_price else "MEDIUM",
+                "parser_status": "PARSED" if ctx.target_price else "PARTIAL",
+                "reasons":       reasons,
+                "missing_inputs":[] if ctx.target_price else ["target price not parsed"],
+            }
+        except Exception as e:
+            reasons.append(f"Crypto parse error: {e}")
+            return _unknown_market_type(market_name, reasons, [str(e)])
+
+    # ── Sports ─────────────────────────────────────────────────────────
+    SPORTS_KW = {"SOCCER","FOOTBALL","BASKETBALL","MLB","NFL","NBA","NHL","UFC",
+                 "FIFA","PREMIER LEAGUE","LA LIGA","SUPER BOWL","WORLD CUP",
+                 "GOAL","MATCH","GAME","PLAYER","TEAM","SCORE"}
+    if any(k in combined for k in SPORTS_KW) or "sports" in cat_low:
+        reasons.append("Sports keywords detected")
+        return _typed(market_name, "SPORTS", category, reasons, confidence="MEDIUM")
+
+    # ── Economic ───────────────────────────────────────────────────────
+    ECON_KW = {"CPI","INFLATION","FOMC","FED","FEDERAL RESERVE","RATE","GDP",
+               "UNEMPLOYMENT","JOBS","PAYROLL","PCE","ISM","PMI","DEFICIT",
+               "DEBT","TREASURY","YIELD","INTEREST RATE"}
+    if any(k in combined for k in ECON_KW) or "economics" in cat_low:
+        reasons.append("Economic indicator keywords detected")
+        return _typed(market_name, "ECONOMIC", category, reasons, confidence="MEDIUM")
+
+    # ── Weather ────────────────────────────────────────────────────────
+    WEATHER_KW = {"HURRICANE","TROPICAL","STORM","RAIN","SNOW","TEMPERATURE",
+                  "TORNADO","DROUGHT","FLOOD","WEATHER","CELSIUS","FAHRENHEIT"}
+    if any(k in combined for k in WEATHER_KW) or "weather" in cat_low:
+        reasons.append("Weather keywords detected")
+        return _typed(market_name, "WEATHER", category, reasons, confidence="MEDIUM")
+
+    # ── Politics ───────────────────────────────────────────────────────
+    POLITICS_KW = {"ELECTION","VOTE","PRESIDENT","CONGRESS","SENATE","BILL",
+                   "POLICY","CANDIDATE","PARTY","DEMOCRAT","REPUBLICAN","TRUMP",
+                   "BIDEN","PRIMARY","LEGISLATION"}
+    if any(k in combined for k in POLITICS_KW) or "politics" in cat_low:
+        reasons.append("Politics keywords detected")
+        return _typed(market_name, "POLITICS", category, reasons, confidence="MEDIUM")
+
+    # ── Financial index ────────────────────────────────────────────────
+    INDEX_KW = {"S&P","SPX","SP500","NASDAQ","DOW","DJIA","RUSSELL","VIX",
+                "INDEX","STOCK MARKET","EQUITY"}
+    if any(k in combined for k in INDEX_KW):
+        reasons.append("Financial index keywords detected")
+        return _typed(market_name, "FINANCIAL_INDEX", category, reasons, confidence="MEDIUM")
+
+    # ── Category fallback ──────────────────────────────────────────────
+    if category:
+        reasons.append(f"Using provided category: {category}")
+        return _typed(market_name, "OTHER", category, reasons, confidence="LOW")
+
+    missing.append("No recognizable keywords found in title/ticker/category")
+    return _unknown_market_type(market_name, reasons, missing)
+
+
+def _typed(name, mtype, cat, reasons, confidence="MEDIUM"):
+    return {
+        "market_type": mtype, "category": cat or mtype.title(),
+        "asset": None, "direction": None, "threshold": None,
+        "unit": None, "time_window": None,
+        "confidence": confidence, "parser_status": "PARTIAL",
+        "reasons": reasons, "missing_inputs": [],
+    }
+
+def _unknown_market_type(name, reasons, missing):
+    return {
+        "market_type": "UNKNOWN", "category": "Unknown",
+        "asset": None, "direction": None, "threshold": None,
+        "unit": None, "time_window": None,
+        "confidence": "LOW", "parser_status": "UNKNOWN",
+        "reasons": reasons, "missing_inputs": missing,
+    }
+
+
+# ── Settlement rule parser ────────────────────────────────────────────────────
+
+def parse_settlement_rules(raw_data: dict) -> dict:
+    """
+    Parse settlement rules from a Kalshi market raw_data dict.
+
+    Returns:
+        {
+            "rules_available":  bool,
+            "rules_summary":    str,
+            "settlement_sources": list[str],
+            "settlement_value": Optional[str],
+            "close_time":       Optional[str],
+            "expiration_time":  Optional[str],
+            "can_close_early":  Optional[bool],
+            "rule_clarity":     str,   # GOOD | PARTIAL | MISSING
+            "warnings":         list[str],
+            "raw_rules_preview":Optional[str],  # first 300 chars only
+        }
+
+    Does NOT invent rules. If missing, says so clearly.
+    """
+    if not raw_data:
+        raw_data = {}
+
+    warnings = []
+    sources  = []
+
+    rules_p  = (raw_data.get("rules_primary",   "") or "").strip()
+    rules_s  = (raw_data.get("rules_secondary",  "") or "").strip()
+    sett_src = raw_data.get("settlement_source", "") or raw_data.get("settlement_sources", "")
+    sett_val = raw_data.get("settlement_value",  None)
+    close_t  = raw_data.get("close_time",        None) or raw_data.get("expiration_time", None)
+    exp_t    = raw_data.get("expected_expiration_time", None) or raw_data.get("expiration_time", None)
+    can_early= raw_data.get("can_close_early",   None)
+    result   = raw_data.get("result",            None)
+
+    if isinstance(sett_src, str) and sett_src:
+        sources = [sett_src]
+    elif isinstance(sett_src, list):
+        sources = [str(s) for s in sett_src if s]
+
+    # Determine rule clarity
+    if rules_p:
+        rule_clarity = "GOOD"
+        summary      = rules_p[:120] + ("…" if len(rules_p) > 120 else "")
+        preview      = rules_p[:300]
+    elif rules_s:
+        rule_clarity = "PARTIAL"
+        summary      = rules_s[:120] + ("…" if len(rules_s) > 120 else "")
+        preview      = rules_s[:300]
+        warnings.append("Only secondary rules available — primary rules missing")
+    else:
+        rule_clarity = "MISSING"
+        summary      = "Settlement rules not available from current market payload."
+        preview      = None
+        warnings.append("Settlement rules missing — verify before paper trading")
+
+    warnings.append("Always verify settlement rules before real trading. Paper mode only.")
+
+    return {
+        "rules_available":   bool(rules_p or rules_s),
+        "rules_summary":     summary,
+        "settlement_sources":sources,
+        "settlement_value":  str(sett_val) if sett_val else None,
+        "close_time":        str(close_t)  if close_t  else None,
+        "expiration_time":   str(exp_t)    if exp_t    else None,
+        "can_close_early":   can_early,
+        "rule_clarity":      rule_clarity,
+        "warnings":          warnings,
+        "raw_rules_preview": preview,
+    }
+
+
+# ── Data quality scorer ───────────────────────────────────────────────────────
+
+def data_quality_score(
+    has_bid:            bool = False,
+    has_ask:            bool = False,
+    has_last:           bool = False,
+    has_orderbook:      bool = False,
+    has_settlement_rules:bool = False,
+    has_expiration:     bool = False,
+    has_crypto_ref:     bool = False,   # only relevant if crypto market
+    is_crypto_market:   bool = False,
+    has_fair_price:     bool = False,
+    market_type_confidence: str = "LOW",
+) -> str:
+    """
+    Return data quality label: GOOD | PARTIAL | MISSING | LOW_CONFIDENCE
+
+    Used in Signal Detail, watchlist, and signal scoring.
+    Conservative — never inflates quality.
+    """
+    # MISSING: no usable prices at all
+    if not has_bid and not has_ask and not has_last:
+        return "MISSING"
+
+    score = 0
+    if has_bid:  score += 2
+    if has_ask:  score += 2
+    if has_last: score += 1
+    if has_orderbook: score += 2
+    if has_settlement_rules: score += 2
+    if has_expiration: score += 1
+    if has_fair_price: score += 2
+    if is_crypto_market and has_crypto_ref: score += 1
+    if market_type_confidence == "HIGH":   score += 1
+
+    if score >= 10: return "GOOD"
+    if score >= 5:  return "PARTIAL"
+    if market_type_confidence == "LOW":    return "LOW_CONFIDENCE"
+    return "PARTIAL"
+
+
 # ── Fair price estimation (heuristic placeholder) ────────────────────────────
 
 def estimate_fair_price(
@@ -569,6 +813,18 @@ def score_market(
     data_issues = []
     tier        = signal
 
+    # ── Settlement rules / market type safety ──────────────────────────
+    if extra.get("settlement_rules_missing"):
+        risks.append("Settlement rules unavailable — verify before paper trading")
+        # Never let a missing-rules market reach POSSIBLE EDGE
+        if tier == "POSSIBLE EDGE":
+            tier = "PAPER ONLY"
+
+    if extra.get("market_type") == "UNKNOWN":
+        risks.append("Market type unrecognized — low confidence in analysis")
+        if extra.get("parser_confidence") == "LOW":
+            data_issues.append("Parser confidence LOW for this market")
+
     # ── Data availability ──────────────────────────────────────────────
     if ask <= 0:
         data_issues.append("Missing ask price — load orderbook first")
@@ -655,7 +911,12 @@ def score_market(
         edge = fair - ask
         if edge >= 12:
             score += 20
-            tier = "POSSIBLE EDGE"
+            # Only upgrade to POSSIBLE EDGE if settlement rules are available
+            # and no other safety downgrade was applied
+            if not extra.get("settlement_rules_missing"):
+                tier = "POSSIBLE EDGE"
+            elif tier not in ("DATA NEEDED", "AVOID"):
+                tier = "PAPER ONLY"
             reasons.append(f"Strong edge: {edge:+.1f}c above fair value")
         elif edge >= 8:
             score += 15

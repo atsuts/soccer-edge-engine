@@ -111,6 +111,14 @@ class AIMarketScannerFrame(tk.Frame):
         self._perf_labels    = {}   # widget refs for performance panel
         self._selected_trade = None # currently selected paper trade id
 
+        # Alert Center
+        try:
+            from alert_engine import AlertCenter
+            self._alert_center = AlertCenter(log_fn=self._safe_log)
+        except Exception as _ae:
+            self._alert_center = None
+            print(f"[alert_center] init failed: {_ae}")
+
         # Maximize / restore system
         self._maximized_panel = None      # name of currently maximized panel, or None
         self._max_frame       = None      # overlay frame (built lazily)
@@ -742,6 +750,52 @@ class AIMarketScannerFrame(tk.Frame):
         _row(f1, "Open interest",f"{_rd.get('open_interest','N/A')}")
         _row(f1, "Source",       self.data_layer._last_source or "—")
 
+        # Market type classification
+        try:
+            from market_scanner_engine import (classify_market_type,
+                                               parse_settlement_rules,
+                                               data_quality_score)
+            mtype_info = classify_market_type(
+                market_name = sig.market_name,
+                ticker      = sig.market_id,
+                category    = sig.category,
+                raw_data    = _rd,
+            )
+            mt_col = CYAN if mtype_info["confidence"] == "HIGH" else                      YELLOW if mtype_info["confidence"] == "MEDIUM" else MUTED
+            _row(f1, "Market type",  mtype_info["market_type"], mt_col)
+            _row(f1, "Type conf.",   mtype_info["confidence"])
+            if mtype_info.get("asset"):
+                _row(f1, "Asset",    mtype_info["asset"])
+            if mtype_info.get("direction"):
+                _row(f1, "Direction",mtype_info["direction"])
+            if mtype_info.get("threshold"):
+                _row(f1, "Threshold",f"${mtype_info['threshold']:,.2f}")
+            if mtype_info.get("time_window"):
+                _row(f1, "Deadline", mtype_info["time_window"])
+
+            # Data quality
+            sett_info = parse_settlement_rules(_rd)
+            snap2 = self.data_layer.get_snapshot(sig.market_id)
+            dq = data_quality_score(
+                has_bid            = bool(sig.bid_price),
+                has_ask            = bool(sig.ask_price),
+                has_last           = bool(sig.last_price),
+                has_orderbook      = snap2 is not None and snap2.orderbook_depth is not None,
+                has_settlement_rules= sett_info["rules_available"],
+                has_expiration     = bool(_rd.get("close_time") or _rd.get("expiration_time")),
+                is_crypto_market   = mtype_info["market_type"] == "CRYPTO_PRICE",
+                has_crypto_ref     = bool(self._crypto_prices.get(mtype_info.get("asset",""))),
+                has_fair_price     = bool(sig.fair_price),
+                market_type_confidence = mtype_info["confidence"],
+            )
+            dq_col = GREEN if dq == "GOOD" else YELLOW if dq == "PARTIAL" else                      ORANGE if dq == "LOW_CONFIDENCE" else RED
+            _row(f1, "Data quality", dq, dq_col)
+            _row(f1, "Rule clarity", sett_info["rule_clarity"],
+                 GREEN if sett_info["rule_clarity"] == "GOOD" else
+                 YELLOW if sett_info["rule_clarity"] == "PARTIAL" else RED)
+        except Exception as _mte:
+            _row(f1, "Type/quality", f"Parser error: {str(_mte)[:40]}", MUTED)
+
         # Expiration / close times
         exp_raw  = _rd_str("close_time") or _rd_str("expiration_time")
         sett_raw = _rd_str("expected_expiration_time") or _rd_str("settlement_time")
@@ -794,34 +848,49 @@ class AIMarketScannerFrame(tk.Frame):
         # ── 1b. Settlement Rules ─────────────────────────────────
         f1b = _section("1b  SETTLEMENT RULES")
         try:
-            rules_primary   = _rd_str("rules_primary", "")
-            rules_secondary = _rd_str("rules_secondary", "")
-            sett_source     = (_rd_str("settlement_source") or
-                               _rd_str("expiration_value", "N/A"))
-            can_close_early = _rd.get("can_close_early")
-            result          = _rd_str("result", "")
+            from market_scanner_engine import parse_settlement_rules as _psr
+            sr = _psr(_rd)
 
-            if rules_primary and rules_primary != "N/A":
-                preview = rules_primary[:200] + ("…" if len(rules_primary) > 200 else "")
-                tk.Label(f1b, text=preview, bg=PANEL_DARK, fg=TEXT,
-                    font=FS, padx=8, pady=4, justify="left",
+            # Rule clarity badge
+            clarity_col = GREEN if sr["rule_clarity"] == "GOOD" else                           YELLOW if sr["rule_clarity"] == "PARTIAL" else RED
+            _row(f1b, "Rule clarity", sr["rule_clarity"], clarity_col)
+
+            if sr["rules_available"]:
+                tk.Label(f1b, text=sr["rules_summary"],
+                    bg=PANEL_DARK, fg=TEXT, font=FS,
+                    padx=8, pady=4, justify="left",
                     wraplength=260, anchor="w").pack(fill="x")
             else:
-                _row(f1b, "Rules",
-                     "Settlement rules not available from current market payload.")
+                tk.Label(f1b,
+                    text="Settlement rules not available from current market payload.",
+                    bg=PANEL_DARK, fg=MUTED, font=FS,
+                    padx=8, pady=4, anchor="w", wraplength=260).pack(fill="x")
 
-            _row(f1b, "Sett. source", sett_source)
-            if result and result not in ("N/A", ""):
-                _row(f1b, "Result", result, CYAN)
-            if can_close_early is not None:
-                _row(f1b, "Early close", "Yes" if can_close_early else "No")
+            # Settlement source
+            if sr["settlement_sources"]:
+                _row(f1b, "Sett. source", ", ".join(sr["settlement_sources"][:2]))
+            else:
+                _row(f1b, "Sett. source", _rd_str("settlement_source", "N/A"))
 
-            tk.Label(f1b,
-                text="⚠  Always verify rules before real trading. Paper mode only.",
-                bg="#1a1a2e", fg=YELLOW, font=FS,
-                padx=8, pady=4, justify="left", wraplength=255).pack(fill="x")
+            # Other fields
+            if sr.get("settlement_value"):
+                _row(f1b, "Sett. value", sr["settlement_value"])
+            if sr.get("can_close_early") is not None:
+                _row(f1b, "Early close",
+                     "Yes" if sr["can_close_early"] else "No")
+            result_val = _rd_str("result", "")
+            if result_val and result_val != "N/A":
+                _row(f1b, "Result", result_val, CYAN)
+
+            # Warnings
+            for w in sr["warnings"]:
+                col = YELLOW if "verify" in w.lower() else RED
+                tk.Label(f1b, text=f"⚠  {w}",
+                    bg="#1a1a2e", fg=col, font=FS,
+                    padx=8, pady=2, anchor="w", wraplength=255).pack(fill="x")
+
         except Exception as _re:
-            _row(f1b, "Error", f"Could not parse rules: {str(_re)[:50]}", MUTED)
+            _row(f1b, "Error", f"Rule parse error: {str(_re)[:50]}", MUTED)
 
         f2 = _section("2  KALSHI QUOTE")
 
@@ -966,6 +1035,17 @@ class AIMarketScannerFrame(tk.Frame):
                 if snap and snap.price and ctx.target_price:
                     dist_pct = (snap.price - ctx.target_price) / ctx.target_price * 100
                     extra["distance_pct"] = dist_pct
+
+            # Enrich extra dict with settlement/type context
+            try:
+                from market_scanner_engine import classify_market_type, parse_settlement_rules
+                mt2 = classify_market_type(sig.market_name, sig.market_id, sig.category, _rd)
+                sr2 = parse_settlement_rules(_rd)
+                extra["settlement_rules_missing"] = not sr2["rules_available"]
+                extra["market_type"]             = mt2["market_type"]
+                extra["parser_confidence"]       = mt2["confidence"]
+            except Exception:
+                pass
 
             scored = score_market(
                 signal       = sig.signal,
@@ -1139,9 +1219,54 @@ class AIMarketScannerFrame(tk.Frame):
                 if wle.last_alert_msg:
                     _row(f_wl, "Last alert", wle.last_alert_msg[:40] or "None")
                 if wle.alert_note:
-                    _row(f_wl, "Note",      wle.alert_note[:40])
+                    _row(f_wl, "Alert note", wle.alert_note[:40])
+                # Show targets if set
+                if wle.target_yes_price:
+                    _row(f_wl, "YES target", format_cents(wle.target_yes_price), YELLOW)
+                if wle.target_no_price:
+                    _row(f_wl, "NO target",  format_cents(wle.target_no_price), YELLOW)
+                if wle.min_edge_cents:
+                    _row(f_wl, "Min edge",   f"{wle.min_edge_cents:.0f}c", YELLOW)
+                # Note section
+                note_val = wle.user_note or ""
+                tk.Label(f_wl, text="Note:", bg=PANEL_DARK, fg=MUTED,
+                    font=FS, padx=6, anchor="w").pack(fill="x")
+                note_var = tk.StringVar(value=note_val)
+                note_entry = tk.Entry(f_wl, textvariable=note_var,
+                    bg=PANEL, fg=TEXT, insertbackground=TEXT,
+                    font=FS, relief="flat")
+                note_entry.pack(fill="x", padx=6, pady=2)
+
+                def _save_note(ticker=sig.market_id, var=note_var):
+                    note = var.get().strip()
+                    if self._watchlist.save_note(ticker, note):
+                        self._safe_log(f"Note saved for {ticker}: {note[:40]}")
+                    else:
+                        self._safe_log(f"Could not save note — market not in watchlist")
+
+                tk.Button(f_wl, text="Save Note", bg="#0e7490", fg=TEXT,
+                    relief="flat", font=FS, pady=3,
+                    command=_save_note).pack(fill="x", padx=6, pady=2)
+
+                # Recent alerts from AlertCenter for this market
+                if self._alert_center:
+                    recent = self._alert_center.recent_for_ticker(sig.market_id, 3)
+                    if recent:
+                        tk.Label(f_wl, text="Recent alerts:",
+                            bg=PANEL_DARK, fg=MUTED, font=FS,
+                            padx=6, anchor="w").pack(fill="x")
+                        for al in recent:
+                            sev_col = RED if al.severity=="ERROR" else YELLOW if al.severity in ("WARNING","WATCH") else MUTED
+                            tk.Label(f_wl,
+                                text=f"  [{al.severity}] {al.message[:50]}",
+                                bg=PANEL_DARK, fg=sev_col, font=FS,
+                                padx=8, anchor="w", wraplength=255).pack(fill="x")
             else:
                 _row(f_wl, "Status", "Not in watchlist")
+                tk.Label(f_wl,
+                    text="Add to watchlist to save notes and set price targets.",
+                    bg=PANEL_DARK, fg=MUTED, font=FS,
+                    padx=8, pady=4, anchor="w", wraplength=255).pack(fill="x")
         except Exception as _wle:
             _row(f_wl, "Error", str(_wle)[:50], MUTED)
 
@@ -1413,6 +1538,19 @@ class AIMarketScannerFrame(tk.Frame):
                 self._safe_log(
                     f"Heuristic fair price estimated for {heuristic_count} markets "
                     f"(HEURISTIC_ONLY — paper/watch only, not official).")
+
+            # Evaluate alert rules against watched markets
+            if self._alert_center is not None:
+                try:
+                    new_alerts = self._alert_center.evaluate_signals(
+                        self.signals, self._watchlist)
+                    if new_alerts:
+                        uc = self._alert_center.unacked_count()
+                        self._safe_log(
+                            f"Alert Center: {new_alerts} new alert(s) "
+                            f"({uc} total unacknowledged)")
+                except Exception as _ae:
+                    self._safe_log(f"Alert evaluation error: {_ae}")
 
             # Refresh crypto reference in background
             self._refresh_crypto()
@@ -2276,10 +2414,11 @@ class AIMarketScannerFrame(tk.Frame):
             bg=TOP, fg=MUTED, font=FS).pack(side="right", padx=8)
         # Table
         cols = ("Market","Side","Bid","Ask","Last","Signal","Score",
-                "Spread","Time Left","Target","Ref Price","Status","Updated")
-        col_w = {"Market":160,"Side":40,"Bid":42,"Ask":42,"Last":42,"Signal":90,
-                 "Score":45,"Spread":50,"Time Left":80,"Target":70,
-                 "Ref Price":80,"Status":60,"Updated":60}
+                "Spread","Time Left","YES Tgt","NO Tgt",
+                "Ref Price","Status","Note","Last Alert","Updated")
+        col_w = {"Market":150,"Side":38,"Bid":40,"Ask":40,"Last":40,"Signal":90,
+                 "Score":40,"Spread":48,"Time Left":70,"YES Tgt":55,"NO Tgt":55,
+                 "Ref Price":75,"Status":55,"Note":100,"Last Alert":130,"Updated":55}
         tf = tk.Frame(parent, bg=PANEL)
         tf.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
         tf.grid_rowconfigure(0, weight=1)
@@ -2306,12 +2445,18 @@ class AIMarketScannerFrame(tk.Frame):
             tag = "avoid" if e.avoided else ("alert" if e.status=="ALERT" else
                   "stale" if e.status in ("STALE","EXPIRED") else "active")
             ref = f"${e.reference_price:,.0f}" if e.reference_price else "N/A"
+            tgt_y = format_cents(getattr(e,"target_yes_price",None)) if getattr(e,"target_yes_price",None) else "N/A"
+            tgt_n = format_cents(getattr(e,"target_no_price", None)) if getattr(e,"target_no_price", None) else "N/A"
+            note  = (getattr(e,"user_note","") or "")[:25]
             tree.insert("", "end", iid=e.ticker+"_wmax", values=(
                 e.title[:25], e.side, e.bid_str, e.ask_str, e.last_str,
                 e.signal, str(e.score),
                 f"{e.spread:.0f}c" if e.spread else "N/A",
-                "N/A",   # time left — not stored per-entry yet
-                e.target_str, ref, e.status,
+                "N/A",   # time left — not per-entry yet
+                tgt_y, tgt_n,
+                f"${e.reference_price:,.0f}" if e.reference_price else "N/A",
+                e.status, note,
+                (getattr(e,"last_alert_msg","") or "")[:30],
                 e.last_seen[11:16] if e.last_seen else "N/A",
             ), tags=(tag,))
 
@@ -2428,30 +2573,127 @@ class AIMarketScannerFrame(tk.Frame):
         _rebuild_tree(trades)   # initial populate
 
     def _render_max_messages(self, parent):
-        """Expanded scanner messages log."""
+        """Expanded Scanner Messages — dual panel: Alert Center table + full log."""
+        from tkinter import ttk
+        parent.grid_rowconfigure(0, weight=0)
         parent.grid_rowconfigure(1, weight=1)
         parent.grid_columnconfigure(0, weight=1)
-        tb = tk.Frame(parent, bg=TOP)
-        tb.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
-        tk.Button(tb, text="Clear", bg=PANEL, fg=MUTED,
-            relief="flat", font=FS, padx=8,
-            command=lambda: self._max_msg_text.configure(state="normal") or
-                self._max_msg_text.delete("1.0","end") or
+        parent.grid_columnconfigure(1, weight=1)
+
+        # ── Left: Alert Center table ─────────────────────────────────
+        left = tk.Frame(parent, bg=PANEL)
+        left.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=4, pady=4)
+        left.grid_rowconfigure(1, weight=1)
+        left.grid_columnconfigure(0, weight=1)
+
+        tk.Label(left, text="ALERT CENTER", bg=PANEL, fg=YELLOW,
+            font=FB, anchor="w", padx=6, pady=4).grid(row=0, column=0, sticky="ew")
+
+        def _ack_selected():
+            sel = alert_tree.selection()
+            if not sel or not self._alert_center: return
+            for iid in sel:
+                self._alert_center.acknowledge(iid)
+            _rebuild_alert_tree()
+
+        def _clear_acked():
+            if self._alert_center:
+                n = self._alert_center.clear_acknowledged()
+                self._safe_log(f"Cleared {n} acknowledged alerts")
+                _rebuild_alert_tree()
+
+        def _export_alerts():
+            if self._alert_center:
+                path = self._alert_center.export_csv()
+                if path:
+                    self._safe_log(f"Alerts exported → {path}")
+
+        tb_left = tk.Frame(left, bg=TOP)
+        tb_left.grid(row=0, column=0, sticky="ew")
+        for btn_text, btn_cmd in [
+            ("Ack Selected", _ack_selected),
+            ("Clear Acked",  _clear_acked),
+            ("Export CSV",   _export_alerts),
+        ]:
+            tk.Button(tb_left, text=btn_text, bg=PANEL, fg=CYAN,
+                relief="flat", font=("Segoe UI",7), padx=5, pady=2,
+                command=btn_cmd).pack(side="left", padx=2, pady=2)
+
+        at_cols = ("Time","Sev","Type","Market","Message","Ack")
+        at_w    = {"Time":85,"Sev":55,"Type":90,"Market":100,"Message":240,"Ack":30}
+        atf = tk.Frame(left, bg=PANEL)
+        atf.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
+        atf.grid_rowconfigure(0, weight=1)
+        atf.grid_columnconfigure(0, weight=1)
+        alert_tree = ttk.Treeview(atf, columns=at_cols, show="headings",
+            style="Scanner.Treeview")
+        for col in at_cols:
+            alert_tree.heading(col, text=col)
+            alert_tree.column(col, width=at_w.get(col, 60),
+                anchor="w" if col in ("Message","Market","Type") else "center",
+                stretch=(col == "Message"))
+        vsb_at = ttk.Scrollbar(atf, orient="vertical", command=alert_tree.yview)
+        alert_tree.configure(yscrollcommand=vsb_at.set)
+        alert_tree.grid(row=0, column=0, sticky="nsew")
+        vsb_at.grid(row=0, column=1, sticky="ns")
+        alert_tree.tag_configure("error",   foreground=RED)
+        alert_tree.tag_configure("warning", foreground=YELLOW)
+        alert_tree.tag_configure("watch",   foreground=CYAN)
+        alert_tree.tag_configure("info",    foreground=TEXT)
+        alert_tree.tag_configure("acked",   foreground=MUTED)
+
+        def _rebuild_alert_tree():
+            alert_tree.delete(*alert_tree.get_children())
+            if not self._alert_center:
+                return
+            for a in self._alert_center.all_alerts():
+                tag = ("acked" if a.acknowledged else
+                       "error"   if a.severity == "ERROR"   else
+                       "warning" if a.severity == "WARNING" else
+                       "watch"   if a.severity == "WATCH"   else "info")
+                alert_tree.insert("", "end", iid=a.alert_id, values=(
+                    a.created_at[11:19],
+                    a.severity,
+                    a.alert_type,
+                    a.ticker[:18],
+                    a.message[:60],
+                    "✓" if a.acknowledged else "",
+                ), tags=(tag,))
+
+        _rebuild_alert_tree()
+
+        # ── Right: full scanner log ───────────────────────────────────
+        right = tk.Frame(parent, bg=PANEL)
+        right.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=4, pady=4)
+        right.grid_rowconfigure(1, weight=1)
+        right.grid_columnconfigure(0, weight=1)
+
+        tk.Label(right, text="SCANNER LOG", bg=PANEL, fg=GREEN,
+            font=FB, anchor="w", padx=6, pady=4).grid(row=0, column=0, sticky="ew")
+
+        tb_right = tk.Frame(right, bg=TOP)
+        tb_right.grid(row=0, column=0, sticky="ew")
+
+        def _clear_log():
+            if hasattr(self, "_max_msg_text") and self._max_msg_text:
+                self._max_msg_text.configure(state="normal")
+                self._max_msg_text.delete("1.0", "end")
                 self._max_msg_text.configure(state="disabled")
-                if hasattr(self,"_max_msg_text") else None
-            ).pack(side="right", padx=4)
-        mf = tk.Frame(parent, bg=PANEL)
-        mf.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
-        mf.grid_rowconfigure(0, weight=1)
-        mf.grid_columnconfigure(0, weight=1)
-        txt = tk.Text(mf, bg=PANEL_DARK, fg=GREEN, font=FM,
+        tk.Button(tb_right, text="Clear Log", bg=PANEL, fg=MUTED,
+            relief="flat", font=("Segoe UI",7), padx=5, pady=2,
+            command=_clear_log).pack(side="right", padx=2, pady=2)
+
+        rf = tk.Frame(right, bg=PANEL)
+        rf.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
+        rf.grid_rowconfigure(0, weight=1)
+        rf.grid_columnconfigure(0, weight=1)
+        txt = tk.Text(rf, bg=PANEL_DARK, fg=GREEN, font=FM,
             state="disabled", wrap="word", relief="flat")
-        vsb = tk.Scrollbar(mf, command=txt.yview)
-        txt.configure(yscrollcommand=vsb.set)
+        vsb_log = tk.Scrollbar(rf, command=txt.yview)
+        txt.configure(yscrollcommand=vsb_log.set)
         txt.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
+        vsb_log.grid(row=0, column=1, sticky="ns")
         self._max_msg_text = txt
-        # Copy existing log content
         try:
             existing = self._log_text.get("1.0", "end")
             txt.configure(state="normal")
