@@ -344,6 +344,184 @@ def _suggest_exit(fair_cents: float, ask_cents: float, signal: str) -> float:
 
 # ── Human-readable explanation builder ────────────────────────────────────
 
+# ── Fair price estimation (heuristic placeholder) ────────────────────────────
+
+def estimate_fair_price(
+    market_name:    str,
+    category:       str          = "",
+    crypto_prices:  dict         = None,   # {symbol: CryptoPriceSnapshot}
+    expiration_str: str          = None,
+) -> dict:
+    """
+    Estimate a conservative heuristic fair price for a Kalshi market.
+
+    Returns:
+        {
+            "fair_price":        Optional[float],   # 0.0–1.0 (dollars), None = unavailable
+            "fair_price_cents":  Optional[float],   # 0–100 display
+            "fair_price_source": str,               # model status label
+            "confidence":        str,               # LOW / NONE
+            "model_status":      str,               # UNAVAILABLE / DATA_NEEDED / HEURISTIC_ONLY
+            "reasons":           list[str],
+            "missing_inputs":    list[str],
+        }
+
+    IMPORTANT:
+    - This is a rough heuristic only.
+    - Do NOT use for real trading decisions.
+    - All outputs are marked HEURISTIC_ONLY or DATA_NEEDED.
+    - Confidence is always LOW or NONE.
+    - Missing inputs → fair_price = None (never fabricated).
+    """
+    missing  = []
+    reasons  = []
+    fp_d     = None       # fair price in dollars
+    source   = "UNAVAILABLE"
+    conf     = "NONE"
+    status   = "UNAVAILABLE"
+
+    # ── Try to parse crypto market ─────────────────────────────────────
+    try:
+        from crypto_price_connectors import parse_crypto_market_title, CryptoMarketContext
+        ctx: CryptoMarketContext = parse_crypto_market_title(market_name or "")
+    except Exception as e:
+        return {
+            "fair_price": None, "fair_price_cents": None,
+            "fair_price_source": "UNAVAILABLE",
+            "confidence": "NONE", "model_status": "UNAVAILABLE",
+            "reasons": [], "missing_inputs": [f"parse error: {e}"],
+        }
+
+    # ── Non-crypto market — no heuristic yet ──────────────────────────
+    if ctx.asset == "UNKNOWN":
+        return {
+            "fair_price": None, "fair_price_cents": None,
+            "fair_price_source": "UNAVAILABLE",
+            "confidence": "NONE", "model_status": "UNAVAILABLE",
+            "reasons":  [],
+            "missing_inputs": ["Non-crypto market — no heuristic model available"],
+        }
+
+    # ── Crypto market — try to compute distance-based heuristic ───────
+    asset = ctx.asset   # "BTC" or "ETH"
+
+    # Get reference price
+    ref_price = None
+    if crypto_prices and asset in crypto_prices:
+        snap = crypto_prices[asset]
+        if snap and snap.price and snap.price > 0:
+            ref_price = snap.price
+            reasons.append(f"{asset} ref price: ${ref_price:,.2f}")
+        else:
+            missing.append(f"{asset} reference price unavailable")
+    else:
+        missing.append(f"{asset} reference price not loaded")
+
+    if ref_price is None:
+        return {
+            "fair_price": None, "fair_price_cents": None,
+            "fair_price_source": "DATA_NEEDED",
+            "confidence": "NONE", "model_status": "DATA_NEEDED",
+            "reasons": reasons, "missing_inputs": missing,
+        }
+
+    # Get target price
+    target = ctx.target_price
+    if target is None or target <= 0:
+        missing.append("Target price not parseable from title")
+        return {
+            "fair_price": None, "fair_price_cents": None,
+            "fair_price_source": "DATA_NEEDED",
+            "confidence": "NONE", "model_status": "DATA_NEEDED",
+            "reasons": reasons, "missing_inputs": missing,
+        }
+
+    reasons.append(f"Target: ${target:,.2f}  Direction: {ctx.condition}")
+
+    # Distance to target as fraction of target
+    dist_frac = (ref_price - target) / target   # positive = above target
+
+    # Time factor (if expiration available)
+    time_factor = 1.0
+    time_mins   = None
+    if expiration_str and expiration_str not in ("N/A", "", None):
+        try:
+            from datetime import datetime, timezone
+            for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    if fmt.endswith("Z"):
+                        dt = datetime.strptime(expiration_str, fmt).replace(tzinfo=timezone.utc)
+                    else:
+                        dt = datetime.strptime(expiration_str, fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                    diff = (dt - datetime.now(timezone.utc)).total_seconds()
+                    time_mins = max(0, diff / 60)
+                    break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    if time_mins is not None:
+        reasons.append(f"Time to expiry: {int(time_mins)}m")
+        # Simple time scaling: more time = more uncertainty
+        if time_mins > 1440:
+            time_factor = 0.6    # >1 day: very uncertain
+        elif time_mins > 240:
+            time_factor = 0.75   # >4 hours
+        elif time_mins > 60:
+            time_factor = 0.85   # >1 hour
+        else:
+            time_factor = 0.95   # <1 hour: more decisive
+    else:
+        missing.append("Expiration time unavailable — time factor not applied")
+        time_factor = 0.7    # conservative without expiry
+
+    # ── Heuristic: logistic-style curve on distance ────────────────────
+    # This is a ROUGH placeholder only — do not use for real trading.
+    # p(ABOVE) = sigmoid(k * dist_frac / time_uncertainty)
+    import math
+    k = 4.0   # sharpness (purely empirical)
+    raw_p = 1.0 / (1.0 + math.exp(-k * dist_frac * time_factor))
+
+    if ctx.condition == "ABOVE":
+        fp_d = round(raw_p, 4)
+        reasons.append(
+            f"Heuristic P(above ${target:,.0f}): {fp_d*100:.1f}c "
+            f"(dist: {dist_frac*100:+.1f}%, time_factor={time_factor:.2f})")
+    elif ctx.condition == "BELOW":
+        fp_d = round(1.0 - raw_p, 4)
+        reasons.append(
+            f"Heuristic P(below ${target:,.0f}): {fp_d*100:.1f}c "
+            f"(dist: {dist_frac*100:+.1f}%, time_factor={time_factor:.2f})")
+    else:
+        missing.append("Condition (ABOVE/BELOW) not parsed")
+        fp_d = None
+
+    if fp_d is not None:
+        # Clip to conservative range 0.05–0.95 (never claim certainty)
+        fp_d   = round(max(0.05, min(0.95, fp_d)), 4)
+        source = "HEURISTIC_ONLY"
+        conf   = "LOW"
+        status = "HEURISTIC_ONLY"
+        reasons.append(
+            "⚠ HEURISTIC ONLY — not a real volatility model. "
+            "Confidence: LOW. Do not use for real trading.")
+    else:
+        status = "DATA_NEEDED"
+
+    return {
+        "fair_price":        fp_d,
+        "fair_price_cents":  round(fp_d * 100, 2) if fp_d is not None else None,
+        "fair_price_source": source,
+        "confidence":        conf,
+        "model_status":      status,
+        "reasons":           reasons,
+        "missing_inputs":    missing,
+    }
+
+
 # ── Signal scoring ───────────────────────────────────────────────────────────
 
 SIGNAL_PRIORITY = {
@@ -802,10 +980,11 @@ def analyse_market(
 
 
 def run_scanner(
-    markets:    list,
-    min_edge:   float = 8.0,
-    max_spread: float = 5.0,
-    max_size:   float = 10.0,
+    markets:      list,
+    min_edge:     float = 8.0,
+    max_spread:   float = 5.0,
+    max_size:     float = 10.0,
+    crypto_prices: dict = None,    # {symbol: CryptoPriceSnapshot} for heuristic fair price
 ) -> list:
     """
     Analyse a list of raw market dicts and return sorted MarketSignal list.
@@ -813,11 +992,18 @@ def run_scanner(
     Sort order: STRONG ENTRY → ENTRY → WATCH → AVOID → NO TRADE → DATA NEEDED
     Within each tier: sorted by absolute edge descending.
 
+    When crypto_prices is supplied and model_fair_price is None:
+    - estimate_fair_price() is called to get a heuristic estimate
+    - The estimate is injected into the market dict as model_fair_price
+    - It is clearly marked HEURISTIC_ONLY in the trade plan reason
+    - Confidence is LOW — do not use for real trading
+
     Args:
-        markets:    list of dicts (from DataLayer.fetch or any connector)
-        min_edge:   cents of edge required for ENTRY signal
-        max_spread: maximum cents of spread for tradeable markets
-        max_size:   maximum dollar size for position sizing
+        markets:       list of dicts from DataLayer.fetch
+        min_edge:      cents of edge for ENTRY signal
+        max_spread:    max cents of spread for tradeable markets
+        max_size:      max dollar size for position sizing
+        crypto_prices: optional live crypto price dict for heuristic model
 
     Returns:
         list of MarketSignal, sorted best to worst.
@@ -834,10 +1020,38 @@ def run_scanner(
     signals = []
     for m in markets:
         try:
+            # Inject heuristic fair price if model price is missing and crypto_prices available
+            if m.get("model_fair_price") is None and crypto_prices:
+                try:
+                    est = estimate_fair_price(
+                        market_name   = m.get("market_name", ""),
+                        category      = m.get("category", ""),
+                        crypto_prices = crypto_prices,
+                        expiration_str= m.get("expiration_time") or m.get("expiry"),
+                    )
+                    if est.get("fair_price") is not None:
+                        m = dict(m)   # copy so original is untouched
+                        m["model_fair_price"]    = est["fair_price"]
+                        m["_fair_price_source"]  = est["fair_price_source"]
+                        m["_fair_confidence"]    = est["confidence"]
+                        m["_fair_model_status"]  = est["model_status"]
+                        m["_fair_reasons"]       = est["reasons"]
+                        m["_fair_missing"]       = est["missing_inputs"]
+                except Exception as fe:
+                    pass   # heuristic failure never blocks the scan
+
             sig = analyse_market(m, min_edge, max_spread, max_size)
+
+            # Attach fair price metadata to signal reason
+            if m.get("_fair_price_source"):
+                src_tag = m["_fair_price_source"]
+                conf    = m.get("_fair_confidence", "LOW")
+                sig.reason = (
+                    f"[Fair: {src_tag} conf={conf}] " + sig.reason
+                )
+
             signals.append(sig)
         except Exception as e:
-            # One bad market never crashes the whole scan
             print(f"[scanner] skipped {m.get('market_id','?')}: {e}")
 
     signals.sort(key=lambda s: (order.get(s.signal, 9), -abs(s.raw_edge)))

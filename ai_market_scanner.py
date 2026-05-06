@@ -945,9 +945,21 @@ class AIMarketScannerFrame(tk.Frame):
         # ── 7. Why / Explanation ──────────────────────────────────────
         f7 = _section("7  WHY / EXPLANATION")
         try:
-            from market_scanner_engine import score_market
+            from market_scanner_engine import score_market, estimate_fair_price
             # parse_crypto_market_title is already imported at module level
             ctx   = parse_crypto_market_title(sig.market_name)
+
+            # Show fair price estimation details
+            fair_info = {}
+            try:
+                fair_info = estimate_fair_price(
+                    market_name    = sig.market_name,
+                    category       = sig.category,
+                    crypto_prices  = self._crypto_prices or {},
+                    expiration_str = None,
+                )
+            except Exception:
+                pass
             extra = {}
             if ctx.asset != "UNKNOWN":
                 snap = self._crypto_prices.get(ctx.asset)
@@ -965,6 +977,57 @@ class AIMarketScannerFrame(tk.Frame):
                 volume       = sig.volume or 0,
                 extra        = extra,
             )
+            # Fair price status panel
+            if fair_info:
+                fp_val   = fair_info.get("fair_price_cents")
+                fp_src   = fair_info.get("fair_price_source", "UNAVAILABLE")
+                fp_conf  = fair_info.get("confidence", "NONE")
+                fp_stat  = fair_info.get("model_status", "UNAVAILABLE")
+                fp_miss  = fair_info.get("missing_inputs", [])
+                fp_frame = tk.Frame(f7, bg="#1a1a2e")
+                fp_frame.pack(fill="x", padx=6, pady=4)
+
+                def _fp_row(label, val, col=None):
+                    r = tk.Frame(fp_frame, bg="#1a1a2e")
+                    r.pack(fill="x", padx=8, pady=1)
+                    tk.Label(r, text=label, bg="#1a1a2e", fg=MUTED,
+                        font=FS, width=16, anchor="w").pack(side="left")
+                    tk.Label(r, text=str(val), bg="#1a1a2e", fg=(col or TEXT),
+                        font=FM, anchor="w").pack(side="left")
+
+                _fp_row("Fair price",
+                        f"{fp_val:.1f}c" if fp_val is not None else "N/A",
+                        YELLOW if fp_val else MUTED)
+                _fp_row("Model status",  fp_stat,
+                        YELLOW if "HEURISTIC" in fp_stat else MUTED)
+                _fp_row("Confidence",    fp_conf,
+                        RED if fp_conf == "NONE" else YELLOW)
+
+                if sig.ask_price and sig.ask_price > 0 and fp_val is not None:
+                    if sig.side == "YES":
+                        edge_c = fp_val - sig.ask_price
+                    else:
+                        no_fair = 100 - fp_val
+                        edge_c  = no_fair - sig.ask_price
+                    edge_col = GREEN if edge_c >= 8 else YELLOW if edge_c > 0 else RED
+                    _fp_row("Heuristic edge",
+                            f"{edge_c:+.1f}c",
+                            edge_col)
+                    _fp_row("Entry ask",
+                            format_cents(sig.ask_price))
+
+                if fp_miss:
+                    tk.Label(fp_frame,
+                        text="Missing: " + "; ".join(fp_miss[:2]),
+                        bg="#1a1a2e", fg=RED, font=FS,
+                        padx=8, pady=2, anchor="w", wraplength=255).pack(fill="x")
+
+                if "HEURISTIC" in fp_stat:
+                    tk.Label(fp_frame,
+                        text="⚠ HEURISTIC ONLY — Low confidence. Paper/watch only.",
+                        bg="#1a1a2e", fg=YELLOW, font=FS,
+                        padx=8, pady=2, anchor="w").pack(fill="x")
+
             # Score bar
             bar_frame = tk.Frame(f7, bg=PANEL_DARK)
             bar_frame.pack(fill="x", padx=6, pady=4)
@@ -1298,9 +1361,10 @@ class AIMarketScannerFrame(tk.Frame):
 
             self.signals = run_scanner(
                 raw_dicts,
-                min_edge   = self.v_min_edge.get(),
-                max_spread = self.v_max_spread.get(),
-                max_size   = self.v_max_size.get())
+                min_edge      = self.v_min_edge.get(),
+                max_spread    = self.v_max_spread.get(),
+                max_size      = self.v_max_size.get(),
+                crypto_prices = self._crypto_prices or {})
 
             self._populate_tree()
             self._update_status_box()
@@ -1333,12 +1397,22 @@ class AIMarketScannerFrame(tk.Frame):
             self._update_pt_tree()
             self._update_performance()
 
-            # Update watchlist from live signal data (returns alert messages)
+            # Update watchlist from live signal data
             self._watchlist.update_from_signals(self.signals)
             self._refresh_wl_tree()
-            # Route any watchlist alerts to Scanner Messages
+            # Route watchlist alerts to Scanner Messages
             for alert_msg in self._watchlist.get_alert_messages():
                 self._safe_log(alert_msg)
+
+            # Log any markets that now have heuristic fair price
+            heuristic_count = sum(
+                1 for s in self.signals
+                if s.fair_price and s.fair_price > 0 and "[Fair:" in s.reason
+            )
+            if heuristic_count > 0:
+                self._safe_log(
+                    f"Heuristic fair price estimated for {heuristic_count} markets "
+                    f"(HEURISTIC_ONLY — paper/watch only, not official).")
 
             # Refresh crypto reference in background
             self._refresh_crypto()
