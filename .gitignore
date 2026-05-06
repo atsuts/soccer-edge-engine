@@ -9,3 +9,5 @@ logs/
 data/paper_trades/
 __pycache__/
 *.pyc
+
+exports/
