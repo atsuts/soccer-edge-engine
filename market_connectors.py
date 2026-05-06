@@ -691,6 +691,49 @@ class DataLayer:
         """Return the last known MarketSnapshot for a ticker, or None."""
         return self._snapshot_cache.get(ticker)
 
+    def debug_price_summary(self) -> dict:
+        """
+        Return a summary of price field availability across loaded snapshots.
+        Safe — never prints API keys.
+        """
+        snaps = list(self._snapshot_cache.values())
+        if not snaps:
+            return {"total": 0, "note": "No markets loaded yet"}
+
+        def _has(attr, snap):
+            v = getattr(snap, attr, None)
+            return v is not None
+
+        total     = len(snaps)
+        with_yb   = sum(1 for s in snaps if _has("yes_bid",   s))
+        with_ya   = sum(1 for s in snaps if _has("yes_ask",   s))
+        with_nb   = sum(1 for s in snaps if _has("no_bid",    s))
+        with_na   = sum(1 for s in snaps if _has("no_ask",    s))
+        with_last = sum(1 for s in snaps if _has("last_price", s))
+        with_fair = sum(1 for s in snaps if _has("model_fair_price", s))
+        with_vol  = sum(1 for s in snaps if getattr(s, "volume", 0) > 0)
+
+        first_snap = snaps[0]
+        sample = {}
+        if first_snap.raw_data:
+            # Show non-null field names from first raw response (no values)
+            sample = {k: type(v).__name__
+                      for k, v in first_snap.raw_data.items()
+                      if v is not None}
+
+        return {
+            "total":          total,
+            "with_yes_bid":   with_yb,
+            "with_yes_ask":   with_ya,
+            "with_no_bid":    with_nb,
+            "with_no_ask":    with_na,
+            "with_last_price":with_last,
+            "with_fair_price":with_fair,
+            "with_volume":    with_vol,
+            "source":         self._last_source,
+            "sample_fields":  list(sample.keys())[:20],
+        }
+
     def get_orderbook(self, ticker: str, source: str = "mock") -> Optional[OrderbookSnapshot]:
         """Route orderbook fetch to correct connector."""
         try:

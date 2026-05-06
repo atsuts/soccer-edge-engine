@@ -1308,6 +1308,25 @@ class AIMarketScannerFrame(tk.Frame):
             ec = sum(1 for s in self.signals if s.signal in ("ENTRY","STRONG ENTRY"))
             self._safe_log(f"Loaded {len(self.signals)} markets from {source} — {ec} signals.")
 
+            # Log price field availability summary (never logs API keys)
+            try:
+                summary = self.data_layer.debug_price_summary()
+                n = summary.get("total", 0)
+                yb = summary.get("with_yes_bid",    0)
+                ya = summary.get("with_yes_ask",    0)
+                lp = summary.get("with_last_price", 0)
+                fv = summary.get("with_fair_price", 0)
+                self._safe_log(
+                    f"Price availability ({n} markets): "
+                    f"yes_bid={yb}  yes_ask={ya}  last={lp}  fair={fv}"
+                )
+                if yb == 0 and source != "MOCK":
+                    self._safe_log(
+                        "NOTE: No bid/ask prices yet — Kalshi markets may have "
+                        "no active quotes. Click Load Orderbook on a selected row.")
+            except Exception:
+                pass
+
             # Update paper trade current prices from refreshed market data
             price_map = {s.market_id: s.bid_price for s in self.signals if s.bid_price}
             self._paper_engine.update_prices(price_map)
@@ -1547,83 +1566,77 @@ class AIMarketScannerFrame(tk.Frame):
         self._update_status_box()
 
     def _load_orderbook_for_selected(self):
-        """Load orderbook for selected row. Read-only — no orders."""
-        if not self.selected_signal:
-            self._safe_log("Select a market row first, then click Load Orderbook.")
+        """
+        Load orderbook for the selected signal. Updates bid/ask/spread on signal.
+        No real orders placed.
+        """
+        sig = self.selected_signal
+        if sig is None:
+            self._safe_log("Select a market row first.")
             return
-        ticker = self.selected_signal.market_id
-        self._safe_log(f"Fetching orderbook for {ticker}…")
-        try:
-            ob = self.data_layer.get_orderbook(ticker,
-                source=self.data_layer._last_source)
-            if ob:
-                yb = format_price(ob.yes_best_bid)
-                ya = format_price(ob.yes_best_ask)
-                nb = format_price(ob.no_best_bid)
-                na = format_price(ob.no_best_ask)
-                depth = ob.total_yes_qty + ob.total_no_qty
-                self._safe_log(
-                    f"OB {ticker}: YES {yb}/{ya}  NO {nb}/{na}  "
-                    f"liq={ob.liquidity}  depth={depth}")
-                sig = self.selected_signal
-                # Pick side and get dollar prices for engine
-                oya, ona = ob.yes_best_ask, ob.no_best_ask
-                if oya is not None and ona is not None:
-                    ob_side = "YES" if oya <= ona else "NO"
-                elif oya is not None: ob_side = "YES"
-                elif ona is not None: ob_side = "NO"
-                else:                ob_side = sig.side
-                bid_d = ob.yes_best_bid if ob_side == "YES" else ob.no_best_bid
-                ask_d = ob.yes_best_ask if ob_side == "YES" else ob.no_best_ask
-                raw = {
-                    "market_id":        sig.market_id,
-                    "market_name":      sig.market_name,
-                    "category":         sig.category,
-                    "side":             ob_side,
-                    "bid_price":        bid_d,        # dollars → engine converts to cents
-                    "ask_price":        ask_d,
-                    "last_price":       sig.last_price/100.0 if sig.last_price else None,
-                    "model_fair_price": sig.fair_price/100.0 if sig.fair_price else None,
-                    "volume":           sig.volume,
-                    "liquidity":        ob.liquidity,
-                }
-                from market_scanner_engine import analyse_market
-                updated = analyse_market(raw)
-                for i, s in enumerate(self.signals):
-                    if s.market_id == ticker:
-                        self.signals[i] = updated
-                        self.selected_signal = updated
-                        break
-                tag = updated.signal.replace(" ", "_")
-                try:
-                    self.tree.item(ticker, values=(
-                        updated.market_name[:28], updated.side,
-                        format_cents(updated.bid_price)  if updated.bid_price  else "N/A",
-                        format_cents(updated.ask_price)  if updated.ask_price  else "N/A",
-                        format_cents(updated.last_price) if updated.last_price else "N/A",
-                        format_cents(updated.fair_price) if updated.fair_price else "N/A",
-                        f"{updated.raw_edge:+.0f}c"   if updated.ask_price  else "N/A",
-                        format_cents(updated.spread)  if updated.spread     else "N/A",
-                        f"{updated.fee_est:.0f}c"      if updated.ask_price  else "N/A",
-                        f"{updated.breakeven:.0f}c"    if updated.breakeven  else "N/A",
-                        updated.signal,
-                        f"${updated.suggested_size:.0f}" if updated.suggested_size else "$0",
-                        f"{updated.exit_target:.0f}c"    if updated.exit_target    else "—",
-                        self.data_layer._last_source[:8],
-                    ), tags=(tag,))
-                except Exception:
-                    self._populate_tree()
-                self._show_signal_detail(updated)
-                self._last_ob_status = f"Loaded (depth={depth})"
-            else:
-                self._safe_log("No orderbook prices available for this market.")
-                self._last_ob_status = "Not available"
-        except Exception as e:
-            self._safe_log(f"Orderbook error: {e}")
-            self._last_ob_status = "Failed"
-        self._update_status_box()
+        import threading
+        def _fetch():
+            try:
+                ob = self.data_layer.get_orderbook(
+                    sig.market_id,
+                    source=self.data_layer._last_source)
+                if ob:
+                    self._last_ob_status = (
+                        f"Loaded — {ob.total_yes_qty} YES / "
+                        f"{ob.total_no_qty} NO levels")
 
-    # ── Crypto reference ───────────────────────────────────────────────────
+                    # Convert orderbook dollar floats → cents, fill complement rule
+                    def _dc(v):
+                        return round(v * 100, 2) if v is not None else None
+
+                    yb_c = _dc(ob.yes_best_bid)
+                    ya_c = _dc(ob.yes_best_ask)
+                    nb_c = _dc(ob.no_best_bid)
+                    na_c = _dc(ob.no_best_ask)
+
+                    if yb_c and not nb_c: nb_c = round(100 - yb_c, 2)
+                    if ya_c and not na_c: na_c = round(100 - ya_c, 2)
+                    if nb_c and not ya_c: ya_c = round(100 - nb_c, 2)
+                    if na_c and not yb_c: yb_c = round(100 - na_c, 2)
+
+                    # Write to signal (cents)
+                    if sig.side == "YES":
+                        if yb_c: sig.bid_price = yb_c
+                        if ya_c: sig.ask_price = ya_c
+                    else:
+                        if nb_c: sig.bid_price = nb_c
+                        if na_c: sig.ask_price = na_c
+
+                    if sig.ask_price and sig.bid_price:
+                        sig.spread = round(sig.ask_price - sig.bid_price, 1)
+
+                    self._safe_log(
+                        f"Orderbook {sig.market_id}: "
+                        f"YES {yb_c or 'N/A'}c bid / {ya_c or 'N/A'}c ask | "
+                        f"NO {nb_c or 'N/A'}c bid / {na_c or 'N/A'}c ask — "
+                        f"{ob.total_yes_qty + ob.total_no_qty} total levels")
+
+                    # Push updated price into paper engine
+                    if sig.bid_price:
+                        try:
+                            self._paper_engine.update_prices(
+                                {sig.market_id: sig.bid_price})
+                        except Exception:
+                            pass
+                else:
+                    self._last_ob_status = "Orderbook loaded — no bid levels available"
+                    self._safe_log(
+                        f"Orderbook {sig.market_id}: no bid levels returned from API")
+
+                self.after(0, lambda: self._show_signal_detail(sig))
+                self.after(50, self._populate_tree)   # refresh table row
+
+            except Exception as e:
+                self._safe_log(f"Orderbook error: {e}")
+                import traceback; traceback.print_exc()
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
 
     def _on_crypto_src_change(self):
         src = self.v_crypto_src.get()
@@ -1757,7 +1770,7 @@ class AIMarketScannerFrame(tk.Frame):
         No real orders. No account balance used.
         Blocks if ask price missing or market closed.
         """
-        # Check if market is closed
+        # Block if market is closed
         try:
             snap = self.data_layer.get_snapshot(sig.market_id)
             if snap:
@@ -1768,20 +1781,32 @@ class AIMarketScannerFrame(tk.Frame):
                         f"Cannot enter a closed market.")
                     return
             raw_data = snap.raw_data if snap and snap.raw_data else {}
-            rules_txt = raw_data.get("rules_primary", "")
-            if not rules_txt:
+            if not raw_data.get("rules_primary", ""):
                 self._safe_log(
-                    f"Paper trade created without settlement rules available "
-                    f"for {sig.market_id}. Paper mode only — no real order placed.")
+                    f"Paper trade created without settlement rules for "
+                    f"{sig.market_id}. Paper mode only — no real order placed.")
         except Exception:
             pass
 
-        if not sig.ask_price or sig.ask_price <= 0:
+        # Determine best entry price: prefer side-specific ask from snapshot
+        entry_cents = sig.ask_price
+        try:
+            snap2 = self.data_layer.get_snapshot(sig.market_id)
+            if snap2:
+                if sig.side == "YES" and snap2.yes_ask:
+                    entry_cents = round(snap2.yes_ask * 100, 2)
+                elif sig.side == "NO" and snap2.no_ask:
+                    entry_cents = round(snap2.no_ask * 100, 2)
+                elif sig.last_price and not entry_cents:
+                    entry_cents = sig.last_price
+        except Exception:
+            pass
+
+        if not entry_cents or entry_cents <= 0:
             self._safe_log(
                 f"Paper trade blocked for {sig.market_id}: "
-                f"no valid entry price (ask = N/A). "
-                f"Click 'Load Orderbook' first to fetch live bid/ask prices. "
-                f"No real order was placed.")
+                f"no valid entry price (ask = N/A for {sig.side} side). "
+                f"Click 'Load Orderbook' first. No real order placed.")
             return
         try:
             _ = self._paper_engine
@@ -1793,7 +1818,7 @@ class AIMarketScannerFrame(tk.Frame):
             ticker       = sig.market_id,
             title        = sig.market_name,
             side         = sig.side,
-            entry_cents  = sig.ask_price,
+            entry_cents  = entry_cents,   # side-specific ask
             max_size_dollars = max_size,
             source       = self.data_layer._last_source or "kalshi",
             reason       = sig.reason[:100],

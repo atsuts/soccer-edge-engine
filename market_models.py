@@ -473,6 +473,23 @@ def format_cents(value) -> str:
 
 
 
+def normalize_price(value) -> Optional[float]:
+    """
+    Normalize any raw Kalshi price field to an internal dollar float (0.0–1.0).
+    Public convenience wrapper around parse_kalshi_price.
+
+    Rules:
+      None / "" / "N/A"     → None
+      0 (explicit)          → 0.0
+      0.0–1.0 (dollars)     → as-is
+      1–100 (cents)         → divide by 100
+      out of range          → None (invalid)
+
+    Never converts missing to 0.
+    """
+    return parse_kalshi_price(value)
+
+
 def sanity_check_price(value, label: str = "") -> Optional[float]:
     """Validate that an internal price is in dollar range (0.0-1.0). Log if not."""
     if value is None:
